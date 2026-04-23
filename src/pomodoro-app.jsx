@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { doc, setDoc, getDoc } from "firebase/firestore";
+import { auth, provider, db } from "./firebase";
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const FOCUS_PRESETS  = [15, 25, 45, 60, 90];
@@ -15,7 +18,7 @@ const MODES = {
   longBreak:  { label:"Long Break",  presets:LONG_PRESETS,   default:20, color:"#C97D5B", glow:"rgba(201,125,91,.28)" },
 };
 
-// ─── CHIME (Web Audio API — three soft sine tones) ────────────────────────────
+// ─── CHIME ────────────────────────────────────────────────────────────────────
 function playChime() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -296,10 +299,12 @@ function DeepDive({ tasks, taskStats, activeTaskId, isRunning, liveSession, mode
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function PomodoroApp() {
   const [user,setUser]         = useState(null);
+  const [authLoading,setAuthLoading] = useState(true); // true while Firebase checks session
   const [showAuth,setShowAuth] = useState(false);
+  const [syncing,setSyncing]   = useState(false);
   const [mode,setMode]         = useState("focus");
   const [duration,setDuration] = useState(MODES.focus.default*60);
-  const [timeLeft,setTimeLeft] = useState(MODES.focus.default*60); // goes negative in overtime
+  const [timeLeft,setTimeLeft] = useState(MODES.focus.default*60);
   const [isRunning,setRunning] = useState(false);
   const [isOvertime,setOT]     = useState(false);
   const [chimeFired,setChime]  = useState(false);
@@ -329,6 +334,7 @@ export default function PomodoroApp() {
   const tasksRef   =useRef(tasks);
   const otRef      =useRef(false);
   const liveRef    =useRef(0);
+  const saveTimer  =useRef(null);
 
   useEffect(()=>{ modeRef.current=mode; },[mode]);
   useEffect(()=>{ atIdRef.current=activeTaskId; },[activeTaskId]);
@@ -342,6 +348,76 @@ export default function PomodoroApp() {
   useEffect(()=>save("pomo_activeTask",activeTaskId),[activeTaskId]);
   useEffect(()=>save("pomo_sessions",sessions),[sessions]);
   useEffect(()=>{ if(Notification.permission==="default")Notification.requestPermission(); },[]);
+
+  // ── FIREBASE: Load user data from Firestore ──
+  const loadFromFirestore = async (uid) => {
+    try {
+      const snap = await getDoc(doc(db, "users", uid));
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.tasks)      { setTasks(data.tasks);      save("pomo_tasks", data.tasks); }
+        if (data.dailyStats) { setDS(data.dailyStats);    save("pomo_dailyStats", data.dailyStats); }
+        if (data.taskStats)  { setTS(data.taskStats);     save("pomo_taskStats", data.taskStats); }
+        if (data.sessions)   { setSessions(data.sessions);save("pomo_sessions", data.sessions); }
+      }
+    } catch (err) {
+      console.error("Firestore load error:", err);
+    }
+  };
+
+  // ── FIREBASE: Save user data to Firestore (debounced) ──
+  const saveToFirestore = useCallback((uid, data) => {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await setDoc(doc(db, "users", uid), data, { merge: true });
+      } catch (err) {
+        console.error("Firestore save error:", err);
+      }
+    }, 2000); // debounce 2s
+  }, []);
+
+  // ── FIREBASE: Auth state listener ──
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        setUser(firebaseUser);
+        setSyncing(true);
+        await loadFromFirestore(firebaseUser.uid);
+        setSyncing(false);
+      } else {
+        setUser(null);
+      }
+      setAuthLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // ── FIREBASE: Auto-save when data changes ──
+  useEffect(() => {
+    if (!user) return;
+    saveToFirestore(user.uid, { tasks, dailyStats, taskStats, sessions });
+  }, [tasks, dailyStats, taskStats, sessions, user, saveToFirestore]);
+
+  // ── FIREBASE: Sign in with Google ──
+  const handleSignIn = async () => {
+    try {
+      await signInWithPopup(auth, provider);
+      setShowAuth(false);
+    } catch (err) {
+      console.error("Sign-in error:", err);
+    }
+  };
+
+  // ── FIREBASE: Sign out ──
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+    } catch (err) {
+      console.error("Sign-out error:", err);
+    }
+  };
 
   const commitSeconds=useCallback((secs)=>{
     if(secs<=0||modeRef.current!=="focus")return;
@@ -358,12 +434,10 @@ export default function PomodoroApp() {
     setSessions(p=>[...p,{id:uid(),taskId:atIdRef.current,durationSeconds:totalSecs,goalSeconds:goalSecs,overtimeSeconds:Math.max(0,totalSecs-goalSecs),startedAt:sesStartRef.current||Date.now()-totalSecs*1000,date:todayKey()}]);
   },[]);
 
-  // ── TICK — counts down then goes negative (overtime) ──
   useEffect(()=>{
     if(isRunning){
       tickRef.current=setInterval(()=>{
         setTimeLeft(prev=>{
-          // Transition point: goal just hit
           if(prev===1&&!otRef.current){
             setOT(true); otRef.current=true;
             if(Notification.permission==="granted")
@@ -374,17 +448,15 @@ export default function PomodoroApp() {
           if(Date.now()-lastSync.current>=SYNC_INTERVAL){
             commitSeconds(sesSecsRef.current); sesSecsRef.current=0; lastSync.current=Date.now();
           }
-          return prev-1; // goes to 0 then -1, -2 ... (overtime)
+          return prev-1;
         });
       },1000);
     } else clearInterval(tickRef.current);
     return ()=>clearInterval(tickRef.current);
   },[isRunning,commitSeconds]);
 
-  // Fire chime once when overtime begins
   useEffect(()=>{ if(isOvertime&&!chimeFired){ playChime(); setChime(true); } },[isOvertime,chimeFired]);
 
-  // ── End session — commit everything + show summary ──
   const endSession=useCallback(()=>{
     clearInterval(tickRef.current);
     commitSeconds(sesSecsRef.current);
@@ -435,7 +507,6 @@ export default function PomodoroApp() {
     setNewTask(""); inputRef.current?.focus();
   };
 
-  // ── Derived ──
   const cfg=MODES[mode];
   const dispColor=isOvertime&&mode==="focus"?OVERTIME_COLOR:cfg.color;
   const dispGlow =isOvertime&&mode==="focus"?OVERTIME_GLOW:cfg.glow;
@@ -452,6 +523,15 @@ export default function PomodoroApp() {
   const R=120, CIRC=2*Math.PI*R;
   const dashOff=isOvertime?0:CIRC*(1-Math.max(0,timeLeft)/duration);
   const overtimeSecs=isOvertime?Math.abs(timeLeft):0;
+
+  if(authLoading){
+    return(
+      <div style={{minHeight:"100vh",background:"#0E0E10",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{width:8,height:8,borderRadius:"50%",background:"#6B9E78",animation:"pulse 1.5s infinite",boxShadow:"0 0 16px #6B9E78"}}/>
+        <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}`}</style>
+      </div>
+    );
+  }
 
   return(
     <div style={{minHeight:"100vh",background:"#0E0E10",color:"#E8E8E8",fontFamily:"'Sora','DM Sans',system-ui,sans-serif",position:"relative",overflowX:"hidden"}}>
@@ -496,14 +576,32 @@ export default function PomodoroApp() {
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:8,height:8,borderRadius:"50%",background:dispColor,boxShadow:`0 0 12px ${dispColor}`,transition:"background .8s,box-shadow .8s",animation:isRunning?"pulse 2s infinite":"none"}}/>
           <span style={{fontWeight:600,fontSize:15,letterSpacing:".06em",color:"#bbb"}}>ZENFLOW</span>
+          {syncing&&<span style={{fontSize:10,color:"#6B9E78",letterSpacing:".06em",opacity:.7}}>syncing…</span>}
         </div>
-        {user?(
+
+        {user ? (
+          /* ── SIGNED IN: show avatar + name + sign-out ── */
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <span style={{fontSize:12,color:"#555"}}>{user.email}</span>
-            <img src={user.avatar} alt="" style={{width:32,height:32,borderRadius:"50%",border:`2px solid ${dispColor}`,objectFit:"cover",transition:"border-color .8s"}}/>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:12.5,color:"#888",fontWeight:500}}>{user.displayName}</div>
+              <div style={{fontSize:10,color:"#383838"}}>{user.email}</div>
+            </div>
+            <div style={{position:"relative"}}>
+              <img
+                src={user.photoURL}
+                alt={user.displayName}
+                style={{width:34,height:34,borderRadius:"50%",border:`2px solid ${dispColor}`,objectFit:"cover",transition:"border-color .8s",cursor:"pointer"}}
+                title="Click to sign out"
+                onClick={handleSignOut}
+              />
+              <div style={{position:"absolute",bottom:-1,right:-1,width:10,height:10,borderRadius:"50%",background:"#6B9E78",border:"2px solid #0E0E10"}}/>
+            </div>
           </div>
-        ):(
-          <button className="btn-spring" onClick={()=>setShowAuth(true)} style={{background:"rgba(255,255,255,0.055)",border:"1px solid rgba(255,255,255,0.09)",color:"#999",borderRadius:8,padding:"7px 14px",fontSize:12.5,cursor:"pointer",fontFamily:"inherit"}}>Sign in with Google</button>
+        ) : (
+          /* ── SIGNED OUT: sign-in button ── */
+          <button className="btn-spring" onClick={()=>setShowAuth(true)} style={{background:"rgba(255,255,255,0.055)",border:"1px solid rgba(255,255,255,0.09)",color:"#999",borderRadius:8,padding:"7px 14px",fontSize:12.5,cursor:"pointer",fontFamily:"inherit"}}>
+            Sign in with Google
+          </button>
         )}
       </header>
 
@@ -549,24 +647,17 @@ export default function PomodoroApp() {
                 </button>
               )}
               {isOvertime&&<div style={{fontSize:10,color:"#4a4a4a",letterSpacing:".07em",fontFamily:"'DM Mono',monospace"}}>goal {fmtDur(duration)} ✓</div>}
-
               <div className={isOvertime&&isRunning?"ot-num":""} style={{fontFamily:"'DM Mono',monospace",fontSize:isOvertime?54:62,fontWeight:300,letterSpacing:"-.02em",lineHeight:1,color:dispColor,textShadow:isRunning?`0 0 40px ${dispGlow}`:"none",transition:"color .6s,font-size .3s,text-shadow .5s"}}>
                 {isOvertime?`+${fmtClock(overtimeSecs)}`:fmtClock(timeLeft)}
               </div>
-
               <div style={{display:"flex",alignItems:"center",gap:6,marginTop:2}}>
                 {isOvertime&&isRunning?(
-                  <div style={{background:`${OVERTIME_COLOR}22`,border:`1px solid ${OVERTIME_COLOR}44`,borderRadius:20,padding:"3px 11px",fontSize:10.5,fontWeight:500,color:OVERTIME_COLOR,letterSpacing:".07em",animation:"otPulse 2.5s ease-in-out infinite"}}>
-                    OVERTIME
-                  </div>
+                  <div style={{background:`${OVERTIME_COLOR}22`,border:`1px solid ${OVERTIME_COLOR}44`,borderRadius:20,padding:"3px 11px",fontSize:10.5,fontWeight:500,color:OVERTIME_COLOR,letterSpacing:".07em",animation:"otPulse 2.5s ease-in-out infinite"}}>OVERTIME</div>
                 ):(
-                  <div style={{fontSize:10.5,color:"#282828",letterSpacing:".12em"}}>
-                    {isRunning?cfg.label.toUpperCase():timeLeft===duration?"READY":"PAUSED"}
-                  </div>
+                  <div style={{fontSize:10.5,color:"#282828",letterSpacing:".12em"}}>{isRunning?cfg.label.toUpperCase():timeLeft===duration?"READY":"PAUSED"}</div>
                 )}
               </div>
             </div>
-
             {showPicker&&!isOvertime&&(
               <div style={{position:"absolute",left:"50%",top:"calc(100% + 12px)",transform:"translateX(-50%)",background:"#18181C",border:"1px solid rgba(255,255,255,0.1)",borderRadius:13,padding:14,zIndex:50,boxShadow:"0 24px 64px rgba(0,0,0,0.75)",animation:"slideDown .2s ease",minWidth:172}}>
                 <div style={{fontSize:9.5,color:"#3a3a3a",letterSpacing:".12em",marginBottom:9}}>DURATION</div>
@@ -595,7 +686,7 @@ export default function PomodoroApp() {
           )}
         </div>
 
-        {/* OVERTIME INFO STRIP */}
+        {/* OVERTIME STRIP */}
         {isOvertime&&isRunning&&(
           <div className="ot-strip" style={{marginBottom:32,background:`linear-gradient(135deg,${OVERTIME_COLOR}0d,${OVERTIME_COLOR}06)`,border:`1px solid ${OVERTIME_COLOR}2e`,borderRadius:12,padding:"11px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
             <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -610,9 +701,7 @@ export default function PomodoroApp() {
                 </div>
               </div>
             </div>
-            <button className="end-btn-ot" onClick={endSession} style={{background:`${OVERTIME_COLOR}22`,border:`1px solid ${OVERTIME_COLOR}55`,borderRadius:9,padding:"7px 14px",color:OVERTIME_COLOR,fontSize:12,fontWeight:500,cursor:"pointer",fontFamily:"inherit",letterSpacing:".04em",flexShrink:0}}>
-              End Session
-            </button>
+            <button className="end-btn-ot" onClick={endSession} style={{background:`${OVERTIME_COLOR}22`,border:`1px solid ${OVERTIME_COLOR}55`,borderRadius:9,padding:"7px 14px",color:OVERTIME_COLOR,fontSize:12,fontWeight:500,cursor:"pointer",fontFamily:"inherit",letterSpacing:".04em",flexShrink:0}}>End Session</button>
           </div>
         )}
 
@@ -660,7 +749,6 @@ export default function PomodoroApp() {
                 ))}
               </div>
               <div style={{padding:"18px 18px 22px"}}>
-
                 {aTab==="overview"&&(
                   <div className="tab-content">
                     <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:16,background:streak>0?"rgba(107,158,120,0.07)":"rgba(255,255,255,0.02)",border:`1px solid ${streak>0?"rgba(107,158,120,0.2)":"rgba(255,255,255,0.05)"}`,borderRadius:13,padding:"14px 18px"}}>
@@ -682,13 +770,11 @@ export default function PomodoroApp() {
                     </div>
                   </div>
                 )}
-
                 {aTab==="deepdive"&&(
                   <div className="tab-content">
                     <DeepDive tasks={tasks} taskStats={taskStats} activeTaskId={activeTaskId} isRunning={isRunning} liveSession={liveSession} mode={mode} accentColor={dispColor}/>
                   </div>
                 )}
-
                 {aTab==="history"&&(
                   <div className="tab-content">
                     <CalendarGrid dailyStats={dailyStats} color={dispColor}/>
@@ -741,9 +827,9 @@ export default function PomodoroApp() {
             <div style={{textAlign:"center",marginBottom:26}}>
               <div style={{width:10,height:10,borderRadius:"50%",background:dispColor,margin:"0 auto 16px",boxShadow:`0 0 24px ${dispColor}`}}/>
               <h2 style={{fontSize:20,fontWeight:600,marginBottom:9,color:"#e0e0e0"}}>Sign in to Zenflow</h2>
-              <p style={{fontSize:13,color:"#444",lineHeight:1.65}}>Sync sessions, streaks & overtime data across all devices.</p>
+              <p style={{fontSize:13,color:"#444",lineHeight:1.65}}>Sync your sessions, streaks & stats across all devices.</p>
             </div>
-            <button className="btn-spring" onClick={()=>{ setUser({email:"you@zenflow.app",avatar:`https://ui-avatars.com/api/?name=ZF&background=${cfg.color.slice(1)}&color=fff&bold=true`}); setShowAuth(false); }} style={{width:"100%",padding:"13px 0",background:"#fff",color:"#111",border:"none",borderRadius:12,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
+            <button className="btn-spring" onClick={handleSignIn} style={{width:"100%",padding:"13px 0",background:"#fff",color:"#111",border:"none",borderRadius:12,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
               <svg width={18} height={18} viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
               Continue with Google
             </button>
