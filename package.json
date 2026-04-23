@@ -12,6 +12,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "lucide-react": "latest"
+    "firebase": "^10.0.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",
