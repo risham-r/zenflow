@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { signInWithRedirect, signOut, onAuthStateChanged } from "firebase/auth";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import { auth, provider, db } from "./firebase";
 
@@ -389,6 +389,10 @@ export default function PomodoroApp() {
         setUser(null);
       }
       setAuthLoading(false);
+      // Handle redirect result on page load
+getRedirectResult(auth).then((result) => {
+  if (result?.user) setUser(result.user);
+}).catch(console.error);
     });
     return () => unsub();
   }, []);
@@ -402,8 +406,7 @@ export default function PomodoroApp() {
   // ── FIREBASE: Sign in with Google ──
   const handleSignIn = async () => {
     try {
-      await signInWithPopup(auth, provider);
-      setShowAuth(false);
+      await signInWithRedirect(auth, provider);
     } catch (err) {
       console.error("Sign-in error:", err);
     }
