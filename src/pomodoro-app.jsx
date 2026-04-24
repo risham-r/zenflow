@@ -378,25 +378,32 @@ export default function PomodoroApp() {
   }, []);
 
   // ── FIREBASE: Auth state listener ──
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        setUser(firebaseUser);
-        setSyncing(true);
-        await loadFromFirestore(firebaseUser.uid);
-        setSyncing(false);
-      } else {
-        setUser(null);
-      }
-      setAuthLoading(false);
-      // Handle redirect result on page load
-getRedirectResult(auth).then((result) => {
-  if (result?.user) setUser(result.user);
-}).catch(console.error);
-    });
-    return () => unsub();
-  }, []);
+ // Handle redirect result when page loads back
+useEffect(() => {
+  getRedirectResult(auth).then(async (result) => {
+    if (result?.user) {
+      setUser(result.user);
+      setSyncing(true);
+      await loadFromFirestore(result.user.uid);
+      setSyncing(false);
+    }
+  }).catch(console.error);
 
+  // Listen for auth state changes
+  const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+    if (firebaseUser) {
+      setUser(firebaseUser);
+      setSyncing(true);
+      await loadFromFirestore(firebaseUser.uid);
+      setSyncing(false);
+    } else {
+      setUser(null);
+    }
+    setAuthLoading(false);
+  });
+
+  return () => unsub();
+}, []);
   // ── FIREBASE: Auto-save when data changes ──
   useEffect(() => {
     if (!user) return;
