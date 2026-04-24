@@ -3,7 +3,7 @@ import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyA7QXWZGTaQk1Pa8yDZmLV-o4h5dMJML44",
+  apiKey: "AIzaSyA7QXWZGTaQk1Pa8yDZmLV-o4h5dMJMl44",
   authDomain: "zenlfow.firebaseapp.com",
   projectId: "zenlfow",
   storageBucket: "zenlfow.firebasestorage.app",
