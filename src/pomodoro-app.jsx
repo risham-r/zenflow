@@ -378,18 +378,7 @@ export default function PomodoroApp() {
   }, []);
 
   // ── FIREBASE: Auth state listener ──
- // Handle redirect result when page loads back
 useEffect(() => {
-  getRedirectResult(auth).then(async (result) => {
-    if (result?.user) {
-      setUser(result.user);
-      setSyncing(true);
-      await loadFromFirestore(result.user.uid);
-      setSyncing(false);
-    }
-  }).catch(console.error);
-
-  // Listen for auth state changes
   const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
     if (firebaseUser) {
       setUser(firebaseUser);
@@ -401,7 +390,6 @@ useEffect(() => {
     }
     setAuthLoading(false);
   });
-
   return () => unsub();
 }, []);
   // ── FIREBASE: Auto-save when data changes ──
@@ -412,12 +400,15 @@ useEffect(() => {
 
   // ── FIREBASE: Sign in with Google ──
   const handleSignIn = async () => {
-    try {
-      await signInWithRedirect(auth, provider);
-    } catch (err) {
-      console.error("Sign-in error:", err);
-    }
-  };
+  try {
+    const result = await signInWithPopup(auth, provider);
+    setUser(result.user);
+    setShowAuth(false);
+  } catch (err) {
+    console.error("Sign-in error:", err);
+    alert(err.message);
+  }
+};
 
   // ── FIREBASE: Sign out ──
   const handleSignOut = async () => {
