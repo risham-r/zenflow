@@ -89,7 +89,7 @@ function CalendarGrid({ dailyStats, color }) {
   const maxS=Math.max(...vals,1);
   const prevM=()=>vm===0?(setVm(11),setVy(y=>y-1)):setVm(m=>m-1);
   const nextM=()=>vm===11?(setVm(0),setVy(y=>y+1)):setVm(m=>m+1);
-  const dayBg=n=>{ const s=dailyStats[`${mk}-${p2(n)}`]||0; if(!s)return{}; const a=Math.round((.15+Math.min(s/maxS,1)*.72)*255).toString(16).padStart(2,"0"); return{background:`${color}${a}`,boxShadow:s/maxS>.5?`0 0 7px ${color}55`:"none"}; };
+  const dayBg=n=>{ const s=dailyStats[`${mk}-${p2(n)}`]||0; if(!s)return{}; const a=Math.round((.15+Math.min(s/maxS,1)*.72)*255).toString(16).padStart(2,"00"); return{background:`${color}${a}`,boxShadow:s/maxS>.5?`0 0 7px ${color}55`:"none"}; };
   const cells=[]; for(let i=0;i<fd;i++)cells.push(null); for(let d=1;d<=dim;d++)cells.push(d);
   return (
     <div>
@@ -162,7 +162,9 @@ function SummaryModal({ summary, onClose, accentColor, accentGlow }) {
 }
 
 // ─── TASK LIST ────────────────────────────────────────────────────────────────
-function TaskList({ tasks, taskStats, activeTaskId, setActiveTaskId, setTasks, isRunning, liveSession, mode, accentColor, accentGlow }) {
+// FIX: accepts `onTaskSelect` instead of calling setActiveTaskId directly,
+// so the parent can commit time before switching.
+function TaskList({ tasks, taskStats, activeTaskId, onTaskSelect, setTasks, isRunning, liveSession, mode, accentColor, accentGlow }) {
   const [collapsed,setCollapsed]=useState(()=>load("pomo_collapsed",{}));
   useEffect(()=>save("pomo_collapsed",collapsed),[collapsed]);
   const dragId=useRef(null);
@@ -176,7 +178,7 @@ function TaskList({ tasks, taskStats, activeTaskId, setActiveTaskId, setTasks, i
   const parentTotal=id=>{ const ch=childrenOf(id); const la=activeTaskId===id?liveFocus:ch.some(c=>c.id===activeTaskId)?liveFocus:0; return (taskStats[id]||0)+ch.reduce((a,c)=>a+(taskStats[c.id]||0),0)+la; };
   const indentUnder=(tid,pid)=>{ if(tid===pid||hasChildren(tid))return; const p=tasks.find(t=>t.id===pid); if(p?.parentId)return; setTasks(prev=>prev.map(t=>t.id===tid?{...t,parentId:pid}:t)); };
   const unindent=tid=>setTasks(prev=>prev.map(t=>t.id===tid?{...t,parentId:null}:t));
-  const removeTask=id=>{ setTasks(prev=>{ const orphans=prev.filter(t=>t.parentId===id).map(t=>({...t,parentId:null})); return [...prev.filter(t=>t.id!==id&&t.parentId!==id),...orphans]; }); if(activeTaskId===id)setActiveTaskId(null); };
+  const removeTask=id=>{ setTasks(prev=>{ const orphans=prev.filter(t=>t.parentId===id).map(t=>({...t,parentId:null})); return [...prev.filter(t=>t.id!==id&&t.parentId!==id),...orphans]; }); if(activeTaskId===id)onTaskSelect(null); };
   const onDragStart=(e,id)=>{ dragId.current=id; e.dataTransfer.effectAllowed="move"; };
   const onDragOver=(e,id,zone)=>{ e.preventDefault(); e.stopPropagation(); setDropTarget({id,zone}); };
   const onDrop=(e,tid)=>{ e.preventDefault(); const src=dragId.current; if(!src||src===tid){setDropTarget(null);return;} if(dropTarget?.zone==="child") indentUnder(src,tid); else { const tTask=tasks.find(t=>t.id===tid); if(!tTask?.parentId){ setTasks(prev=>{ const filt=prev.filter(t=>t.id!==src); const ti=filt.findIndex(t=>t.id===tid); const st=prev.find(t=>t.id===src); if(!st)return prev; filt.splice(dropTarget?.zone==="above"?ti:ti+1,0,{...st,parentId:null}); return filt; }); } } dragId.current=null; setDropTarget(null); };
@@ -195,7 +197,7 @@ function TaskList({ tasks, taskStats, activeTaskId, setActiveTaskId, setTasks, i
             <div className="task-row" draggable onDragStart={e=>onDragStart(e,parent.id)}
               onDragOver={e=>{ const r=e.currentTarget.getBoundingClientRect(),y=e.clientY-r.top,h=r.height; onDragOver(e,parent.id,y<h*.28?"above":y>h*.72?"below":"child"); }}
               onDragLeave={()=>setDropTarget(null)} onDrop={e=>onDrop(e,parent.id)} onDragEnd={onDragEnd}
-              onClick={()=>setActiveTaskId(parent.id)}
+              onClick={()=>onTaskSelect(parent.id)}
               style={{...base,padding:"10px 16px",borderBottom:"1px solid rgba(255,255,255,0.025)",background:dropChild?"rgba(107,158,120,0.1)":isActive?"rgba(255,255,255,0.045)":"transparent",outline:dropChild?`1px solid ${accentColor}44`:"none"}}>
               <span style={{color:"#444",cursor:"grab",flexShrink:0,display:"flex"}} onClick={e=>e.stopPropagation()}><DragHandle/></span>
               {isPar?(
@@ -216,7 +218,7 @@ function TaskList({ tasks, taskStats, activeTaskId, setActiveTaskId, setTasks, i
               const cSecs=ownSecs(child.id), cActive=activeTaskId===child.id;
               return(
                 <div key={child.id} className="task-row" draggable onDragStart={e=>onDragStart(e,child.id)} onDragOver={e=>onDragOver(e,child.id,"child")} onDragLeave={()=>setDropTarget(null)} onDrop={e=>e.preventDefault()} onDragEnd={onDragEnd}
-                  onClick={()=>setActiveTaskId(child.id)}
+                  onClick={()=>onTaskSelect(child.id)}
                   style={{...base,padding:"8px 16px 8px 36px",borderBottom:"1px solid rgba(255,255,255,0.02)",borderLeft:`2px solid ${accentColor}22`,background:cActive?"rgba(255,255,255,0.04)":"transparent"}}>
                   <span style={{color:"#444",cursor:"grab",display:"flex",flexShrink:0}} onClick={e=>e.stopPropagation()}><DragHandle/></span>
                   <div style={{width:5,height:5,borderRadius:"50%",flexShrink:0,background:cActive?accentColor:"rgba(255,255,255,0.18)",boxShadow:cActive?`0 0 6px ${accentColor}`:"none",transition:"all .3s"}}/>
@@ -298,143 +300,152 @@ function DeepDive({ tasks, taskStats, activeTaskId, isRunning, liveSession, mode
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function PomodoroApp() {
-  const [user,setUser]         = useState(null);
-  const [authLoading,setAuthLoading] = useState(true); // true while Firebase checks session
-  const [showAuth,setShowAuth] = useState(false);
-  const [syncing,setSyncing]   = useState(false);
-  const [mode,setMode]         = useState("focus");
-  const [duration,setDuration] = useState(MODES.focus.default*60);
-  const [timeLeft,setTimeLeft] = useState(MODES.focus.default*60);
-  const [isRunning,setRunning] = useState(false);
-  const [isOvertime,setOT]     = useState(false);
-  const [chimeFired,setChime]  = useState(false);
-  const [showPicker,setPicker] = useState(false);
-  const [selMins,setSelMins]   = useState(MODES.focus.default);
-  const [tasks,setTasks]       = useState(()=>load("pomo_tasks",[]));
-  const [activeTaskId,setATId] = useState(()=>load("pomo_activeTask",null));
-  const [newTask,setNewTask]   = useState("");
-  const [iFocus,setIFocus]     = useState(false);
-  const [addMode,setAddMode]   = useState("task");
-  const inputRef=useRef(null);
-  const [dailyStats,setDS]     = useState(()=>load("pomo_dailyStats",{}));
-  const [taskStats,setTS]      = useState(()=>load("pomo_taskStats",{}));
-  const [sessions,setSessions] = useState(()=>load("pomo_sessions",[]));
-  const [showAn,setShowAn]     = useState(false);
-  const [aTab,setATab]         = useState("overview");
-  const [liveSession,setLive]  = useState(0);
-  const [summary,setSummary]   = useState(null);
+  const [user,setUser]               = useState(null);
+  const [authLoading,setAuthLoading] = useState(true);
+  const [showAuth,setShowAuth]       = useState(false);
+  const [syncing,setSyncing]         = useState(false);
+  const [mode,setMode]               = useState("focus");
+  const [duration,setDuration]       = useState(MODES.focus.default*60);
+  const [timeLeft,setTimeLeft]       = useState(MODES.focus.default*60);
+  const [isRunning,setRunning]       = useState(false);
+  const [isOvertime,setOT]           = useState(false);
+  const [chimeFired,setChime]        = useState(false);
+  const [showPicker,setPicker]       = useState(false);
+  const [selMins,setSelMins]         = useState(MODES.focus.default);
+  const [tasks,setTasks]             = useState(()=>load("pomo_tasks",[]));
+  const [activeTaskId,setATId]       = useState(()=>load("pomo_activeTask",null));
+  const [newTask,setNewTask]         = useState("");
+  const [iFocus,setIFocus]           = useState(false);
+  const [addMode,setAddMode]         = useState("task");
+  const inputRef = useRef(null);
+  const [dailyStats,setDS]           = useState(()=>load("pomo_dailyStats",{}));
+  const [taskStats,setTS]            = useState(()=>load("pomo_taskStats",{}));
+  const [sessions,setSessions]       = useState(()=>load("pomo_sessions",[]));
+  const [showAn,setShowAn]           = useState(false);
+  const [aTab,setATab]               = useState("overview");
+  const [liveSession,setLive]        = useState(0);
+  const [summary,setSummary]         = useState(null);
 
-  const tickRef    =useRef(null);
-  const sesSecsRef =useRef(0);
-  const sesStartRef=useRef(null);
-  const goalRef    =useRef(0);
-  const lastSync   =useRef(Date.now());
-  const modeRef    =useRef(mode);
-  const atIdRef    =useRef(activeTaskId);
-  const tasksRef   =useRef(tasks);
-  const otRef      =useRef(false);
-  const liveRef    =useRef(0);
-  const saveTimer  =useRef(null);
+  // ── FIX 4: "Saved" visual confirmation state ──────────────────────────────
+  const [showSaved,setShowSaved]     = useState(false);
+  const savedTimerRef                = useRef(null);
 
-  useEffect(()=>{ modeRef.current=mode; },[mode]);
-  useEffect(()=>{ atIdRef.current=activeTaskId; },[activeTaskId]);
-  useEffect(()=>{ tasksRef.current=tasks; },[tasks]);
-  useEffect(()=>{ otRef.current=isOvertime; },[isOvertime]);
-  useEffect(()=>{ liveRef.current=liveSession; },[liveSession]);
+  const tickRef     = useRef(null);
+  const sesSecsRef  = useRef(0);   // uncommitted seconds since last sync pulse
+  const sesStartRef = useRef(null);
+  const goalRef     = useRef(0);
+  const lastSync    = useRef(Date.now());
+  const modeRef     = useRef(mode);
+  const atIdRef     = useRef(activeTaskId);
+  const tasksRef    = useRef(tasks);
+  const otRef       = useRef(false);
+  const liveRef     = useRef(0);
+  const saveTimer   = useRef(null);
+  // FIX: keep isRunning accessible inside callbacks without stale closures
+  const isRunningRef = useRef(isRunning);
 
-  useEffect(()=>save("pomo_tasks",tasks),[tasks]);
-  useEffect(()=>save("pomo_dailyStats",dailyStats),[dailyStats]);
-  useEffect(()=>save("pomo_taskStats",taskStats),[taskStats]);
-  useEffect(()=>save("pomo_activeTask",activeTaskId),[activeTaskId]);
-  useEffect(()=>save("pomo_sessions",sessions),[sessions]);
+  useEffect(()=>{ modeRef.current    = mode;         },[mode]);
+  useEffect(()=>{ atIdRef.current    = activeTaskId; },[activeTaskId]);
+  useEffect(()=>{ tasksRef.current   = tasks;        },[tasks]);
+  useEffect(()=>{ otRef.current      = isOvertime;   },[isOvertime]);
+  useEffect(()=>{ liveRef.current    = liveSession;  },[liveSession]);
+  useEffect(()=>{ isRunningRef.current = isRunning;  },[isRunning]);
+
+  useEffect(()=>save("pomo_tasks",      tasks),      [tasks]);
+  useEffect(()=>save("pomo_dailyStats", dailyStats), [dailyStats]);
+  useEffect(()=>save("pomo_taskStats",  taskStats),  [taskStats]);
+  useEffect(()=>save("pomo_activeTask", activeTaskId),[activeTaskId]);
+  useEffect(()=>save("pomo_sessions",   sessions),   [sessions]);
   useEffect(()=>{ if(Notification.permission==="default")Notification.requestPermission(); },[]);
 
-  // ── FIREBASE: Load user data from Firestore ──
+  // ── FIREBASE: Load user data ──────────────────────────────────────────────
   const loadFromFirestore = async (uid) => {
     try {
-      const snap = await getDoc(doc(db, "users", uid));
-      if (snap.exists()) {
+      const snap = await getDoc(doc(db,"users",uid));
+      if(snap.exists()){
         const data = snap.data();
-        if (data.tasks)      { setTasks(data.tasks);      save("pomo_tasks", data.tasks); }
-        if (data.dailyStats) { setDS(data.dailyStats);    save("pomo_dailyStats", data.dailyStats); }
-        if (data.taskStats)  { setTS(data.taskStats);     save("pomo_taskStats", data.taskStats); }
-        if (data.sessions)   { setSessions(data.sessions);save("pomo_sessions", data.sessions); }
+        if(data.tasks)      { setTasks(data.tasks);       save("pomo_tasks",      data.tasks);      }
+        if(data.dailyStats) { setDS(data.dailyStats);     save("pomo_dailyStats", data.dailyStats); }
+        if(data.taskStats)  { setTS(data.taskStats);      save("pomo_taskStats",  data.taskStats);  }
+        if(data.sessions)   { setSessions(data.sessions); save("pomo_sessions",   data.sessions);   }
       }
-    } catch (err) {
-      console.error("Firestore load error:", err);
-    }
+    } catch(err){ console.error("Firestore load error:",err); }
   };
 
-  // ── FIREBASE: Save user data to Firestore (debounced) ──
+  // ── FIREBASE: Save (debounced 2s) ─────────────────────────────────────────
   const saveToFirestore = useCallback((uid, data) => {
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        await setDoc(doc(db, "users", uid), data, { merge: true });
-      } catch (err) {
-        console.error("Firestore save error:", err);
-      }
-    }, 2000); // debounce 2s
-  }, []);
+    saveTimer.current = setTimeout(async()=>{
+      try{ await setDoc(doc(db,"users",uid), data, {merge:true}); }
+      catch(err){ console.error("Firestore save error:",err); }
+    }, 2000);
+  },[]);
 
-  // ── FIREBASE: Auth state listener ──
-useEffect(() => {
-  const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-    if (firebaseUser) {
-      setUser(firebaseUser);
-      setSyncing(true);
-      await loadFromFirestore(firebaseUser.uid);
-      setSyncing(false);
-    } else {
-      setUser(null);
-    }
-    setAuthLoading(false);
-  });
-  return () => unsub();
-}, []);
-  // ── FIREBASE: Auto-save when data changes ──
-  useEffect(() => {
-    if (!user) return;
-    saveToFirestore(user.uid, { tasks, dailyStats, taskStats, sessions });
-  }, [tasks, dailyStats, taskStats, sessions, user, saveToFirestore]);
+  // ── FIREBASE: Auth state listener ────────────────────────────────────────
+  useEffect(()=>{
+    const unsub = onAuthStateChanged(auth, async(firebaseUser)=>{
+      if(firebaseUser){
+        setUser(firebaseUser);
+        setSyncing(true);
+        await loadFromFirestore(firebaseUser.uid);
+        setSyncing(false);
+      } else { setUser(null); }
+      setAuthLoading(false);
+    });
+    return ()=>unsub();
+  },[]);
 
-  // ── FIREBASE: Sign in with Google ──
-  const handleSignIn = async () => {
-  try {
-    const result = await signInWithPopup(auth, provider);
-    setUser(result.user);
-    setShowAuth(false);
-  } catch (err) {
-    console.error("Sign-in error:", err);
-    alert(err.message);
-  }
-};
+  // ── FIREBASE: Auto-save on data change ───────────────────────────────────
+  useEffect(()=>{
+    if(!user) return;
+    saveToFirestore(user.uid,{tasks,dailyStats,taskStats,sessions});
+  },[tasks,dailyStats,taskStats,sessions,user,saveToFirestore]);
 
-  // ── FIREBASE: Sign out ──
-  const handleSignOut = async () => {
-    try {
-      await signOut(auth);
-      setUser(null);
-    } catch (err) {
-      console.error("Sign-out error:", err);
-    }
+  // ── FIREBASE: Auth actions ────────────────────────────────────────────────
+  const handleSignIn = async()=>{
+    try{ const r=await signInWithPopup(auth,provider); setUser(r.user); setShowAuth(false); }
+    catch(err){ console.error("Sign-in error:",err); alert(err.message); }
+  };
+  const handleSignOut = async()=>{
+    try{ await signOut(auth); setUser(null); }
+    catch(err){ console.error("Sign-out error:",err); }
   };
 
-  const commitSeconds=useCallback((secs)=>{
-    if(secs<=0||modeRef.current!=="focus")return;
-    const today=todayKey(), taskId=atIdRef.current;
-    const task=tasksRef.current.find(t=>t.id===taskId);
-    const parentId=task?.parentId||null;
+  // ── FIX 4: trigger "Saved ✓" flash ───────────────────────────────────────
+  // Called by endSession and handleTaskSwitch to flash the saved indicator.
+  const triggerSaved = useCallback(()=>{
+    setShowSaved(true);
+    clearTimeout(savedTimerRef.current);
+    savedTimerRef.current = setTimeout(()=>setShowSaved(false), 2200);
+  },[]);
+
+  // ── FIX 3: bubble-up commit — sub-task time goes to parent too ───────────
+  // Reads atIdRef (the task that was active WHEN this is called, i.e. the
+  // OLD task during a switch), so it must be called BEFORE updating atIdRef.
+  const commitSeconds = useCallback((secs)=>{
+    if(secs<=0 || modeRef.current!=="focus") return;
+    const today   = todayKey();
+    const taskId  = atIdRef.current;
+    const task    = tasksRef.current.find(t=>t.id===taskId);
+    const parentId= task?.parentId || null;            // sub-category → also credit parent
+
     setDS(p=>({...p,[today]:(p[today]||0)+secs}));
     if(taskId)   setTS(p=>({...p,[taskId]:(p[taskId]||0)+secs}));
-    if(parentId) setTS(p=>({...p,[parentId]:(p[parentId]||0)+secs}));
+    if(parentId) setTS(p=>({...p,[parentId]:(p[parentId]||0)+secs})); // FIX 3
   },[]);
 
-  const commitSession=useCallback((goalSecs,totalSecs)=>{
-    if(totalSecs<5||modeRef.current!=="focus")return;
-    setSessions(p=>[...p,{id:uid(),taskId:atIdRef.current,durationSeconds:totalSecs,goalSeconds:goalSecs,overtimeSeconds:Math.max(0,totalSecs-goalSecs),startedAt:sesStartRef.current||Date.now()-totalSecs*1000,date:todayKey()}]);
+  const commitSession = useCallback((goalSecs,totalSecs)=>{
+    if(totalSecs<5 || modeRef.current!=="focus") return;
+    setSessions(p=>[...p,{
+      id:uid(), taskId:atIdRef.current,
+      durationSeconds:totalSecs, goalSeconds:goalSecs,
+      overtimeSeconds:Math.max(0,totalSecs-goalSecs),
+      startedAt:sesStartRef.current||Date.now()-totalSecs*1000,
+      date:todayKey(),
+    }]);
   },[]);
 
+  // ── TICK ─────────────────────────────────────────────────────────────────
   useEffect(()=>{
     if(isRunning){
       tickRef.current=setInterval(()=>{
@@ -447,7 +458,9 @@ useEffect(() => {
           sesSecsRef.current+=1;
           setLive(s=>{ liveRef.current=s+1; return s+1; });
           if(Date.now()-lastSync.current>=SYNC_INTERVAL){
-            commitSeconds(sesSecsRef.current); sesSecsRef.current=0; lastSync.current=Date.now();
+            commitSeconds(sesSecsRef.current);
+            sesSecsRef.current=0;
+            lastSync.current=Date.now();
           }
           return prev-1;
         });
@@ -458,38 +471,95 @@ useEffect(() => {
 
   useEffect(()=>{ if(isOvertime&&!chimeFired){ playChime(); setChime(true); } },[isOvertime,chimeFired]);
 
-  const endSession=useCallback(()=>{
+  // ── FIX 1: endSession — guaranteed final sync before stopping ────────────
+  const endSession = useCallback(()=>{
+    // Stop the interval immediately so no more ticks accumulate
     clearInterval(tickRef.current);
-    commitSeconds(sesSecsRef.current);
-    const total=liveRef.current;
-    const goal=goalRef.current;
-    commitSession(goal, total);
-    const taskId=atIdRef.current, task=tasksRef.current.find(t=>t.id===taskId);
-    const parent=task?.parentId?tasksRef.current.find(t=>t.id===task.parentId):null;
-    setSummary({ goalSeconds:goal, overtimeSeconds:Math.max(0,total-goal), taskName:task?.name||null, parentName:parent?.name||null });
-    sesSecsRef.current=0; setRunning(false); setOT(false); otRef.current=false; setChime(false); setLive(0); liveRef.current=0;
-    setTimeLeft(duration);
-  },[duration,commitSeconds,commitSession]);
 
+    // Final live-pulse: commit every second accumulated since the last 30s sync
+    if(sesSecsRef.current > 0){
+      commitSeconds(sesSecsRef.current);
+      sesSecsRef.current = 0;
+    }
+
+    const total = liveRef.current;
+    const goal  = goalRef.current;
+
+    // Log the completed session (sub-5s sessions are ignored inside commitSession)
+    commitSession(goal, total);
+
+    // Resolve task/parent for summary
+    const taskId = atIdRef.current;
+    const task   = tasksRef.current.find(t=>t.id===taskId);
+    const parent = task?.parentId ? tasksRef.current.find(t=>t.id===task.parentId) : null;
+
+    setSummary({
+      goalSeconds:     goal,
+      overtimeSeconds: Math.max(0, total-goal),
+      taskName:        task?.name  || null,
+      parentName:      parent?.name|| null,
+    });
+
+    // FIX 4: flash "Saved ✓"
+    triggerSaved();
+
+    // Reset running state
+    sesSecsRef.current=0; setRunning(false);
+    setOT(false); otRef.current=false;
+    setChime(false); setLive(0); liveRef.current=0;
+    setTimeLeft(duration);
+  },[duration, commitSeconds, commitSession, triggerSaved]);
+
+  // ── FIX 2: handleTaskSwitch — commit then switch ──────────────────────────
+  // This replaces direct calls to setATId from the task list.
+  // A: momentarily pauses accumulation (sesSecsRef checkpoint)
+  // B: commits elapsed seconds to the CURRENT (old) task + its parent
+  // C: updates activeTaskId to the new task
+  // D: timer continues uninterrupted (interval keeps running)
+  const handleTaskSwitch = useCallback((newTaskId)=>{
+    if(newTaskId === atIdRef.current) return;          // tapping same task — no-op
+
+    if(isRunningRef.current && sesSecsRef.current > 0){
+      // B: lock in accumulated seconds to the OLD task before switching
+      commitSeconds(sesSecsRef.current);               // reads atIdRef (still old task)
+      sesSecsRef.current = 0;                          // reset the accumulator
+      lastSync.current   = Date.now();                 // reset sync clock
+      triggerSaved();                                  // FIX 4: flash confirmation
+    }
+
+    // C: switch to new task (atIdRef updates via useEffect)
+    setATId(newTaskId);
+    // D: interval keeps running — no pause needed
+  },[commitSeconds, triggerSaved]);
+
+  // ── Timer controls ────────────────────────────────────────────────────────
   const toggleTimer=()=>{
     if(!isRunning){
-      if(timeLeft===duration){ sesStartRef.current=Date.now(); goalRef.current=duration; setOT(false); otRef.current=false; setChime(false); }
+      if(timeLeft===duration){
+        sesStartRef.current=Date.now();
+        goalRef.current=duration;
+        setOT(false); otRef.current=false; setChime(false);
+      }
       setRunning(true);
     } else {
-      commitSeconds(sesSecsRef.current); sesSecsRef.current=0; setRunning(false);
+      commitSeconds(sesSecsRef.current);
+      sesSecsRef.current=0;
+      setRunning(false);
     }
   };
 
   const resetTimer=()=>{
     if(isRunning){ commitSeconds(sesSecsRef.current); sesSecsRef.current=0; }
-    setRunning(false); setOT(false); otRef.current=false; setChime(false); setTimeLeft(duration); setLive(0); liveRef.current=0;
+    setRunning(false); setOT(false); otRef.current=false; setChime(false);
+    setTimeLeft(duration); setLive(0); liveRef.current=0;
   };
 
   const switchMode=m=>{
     if(isRunning){ commitSeconds(sesSecsRef.current); sesSecsRef.current=0; }
     setRunning(false); setOT(false); otRef.current=false; setChime(false);
     setMode(m); const mins=MODES[m].default;
-    setSelMins(mins); setDuration(mins*60); setTimeLeft(mins*60); setLive(0); liveRef.current=0; setPicker(false);
+    setSelMins(mins); setDuration(mins*60); setTimeLeft(mins*60);
+    setLive(0); liveRef.current=0; setPicker(false);
   };
 
   const selectDur=mins=>{
@@ -508,23 +578,25 @@ useEffect(() => {
     setNewTask(""); inputRef.current?.focus();
   };
 
-  const cfg=MODES[mode];
-  const dispColor=isOvertime&&mode==="focus"?OVERTIME_COLOR:cfg.color;
-  const dispGlow =isOvertime&&mode==="focus"?OVERTIME_GLOW:cfg.glow;
+  // ── Derived values ────────────────────────────────────────────────────────
+  const cfg       = MODES[mode];
+  const dispColor = isOvertime&&mode==="focus" ? OVERTIME_COLOR : cfg.color;
+  const dispGlow  = isOvertime&&mode==="focus" ? OVERTIME_GLOW  : cfg.glow;
   const today=todayKey(), ws=weekStart();
-  const liveFocus=isRunning&&mode==="focus"?liveSession:0;
-  const todayS=(dailyStats[today]||0)+liveFocus;
-  const weekS=Object.entries(dailyStats).filter(([k])=>k>=ws).reduce((a,[,v])=>a+v,0)+liveFocus;
-  const allS=Object.values(dailyStats).reduce((a,v)=>a+v,0)+liveFocus;
-  const streak=computeStreak(dailyStats);
-  const todaySes=sessions.filter(s=>s.date===today).sort((a,b)=>b.startedAt-a.startedAt);
-  const taskMap=Object.fromEntries(tasks.map(t=>[t.id,t.name]));
-  const activeTask=tasks.find(t=>t.id===activeTaskId);
-  const activeParent=activeTask?.parentId?tasks.find(t=>t.id===activeTask.parentId):null;
+  const liveFocus = isRunning&&mode==="focus" ? liveSession : 0;
+  const todayS = (dailyStats[today]||0)+liveFocus;
+  const weekS  = Object.entries(dailyStats).filter(([k])=>k>=ws).reduce((a,[,v])=>a+v,0)+liveFocus;
+  const allS   = Object.values(dailyStats).reduce((a,v)=>a+v,0)+liveFocus;
+  const streak = computeStreak(dailyStats);
+  const todaySes = sessions.filter(s=>s.date===today).sort((a,b)=>b.startedAt-a.startedAt);
+  const taskMap  = Object.fromEntries(tasks.map(t=>[t.id,t.name]));
+  const activeTask   = tasks.find(t=>t.id===activeTaskId);
+  const activeParent = activeTask?.parentId ? tasks.find(t=>t.id===activeTask.parentId) : null;
   const R=120, CIRC=2*Math.PI*R;
-  const dashOff=isOvertime?0:CIRC*(1-Math.max(0,timeLeft)/duration);
-  const overtimeSecs=isOvertime?Math.abs(timeLeft):0;
+  const dashOff    = isOvertime ? 0 : CIRC*(1-Math.max(0,timeLeft)/duration);
+  const overtimeSecs = isOvertime ? Math.abs(timeLeft) : 0;
 
+  // ── Auth loading splash ───────────────────────────────────────────────────
   if(authLoading){
     return(
       <div style={{minHeight:"100vh",background:"#0E0E10",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -551,6 +623,8 @@ useEffect(() => {
         @keyframes otPulse   {0%,100%{opacity:1;transform:scale(1)}50%{opacity:.75;transform:scale(1.03)}}
         @keyframes ringGlow  {0%,100%{filter:drop-shadow(0 0 8px ${OVERTIME_COLOR}88)}50%{filter:drop-shadow(0 0 24px ${OVERTIME_COLOR})}}
         @keyframes stripSlide{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes savedPop  {0%{opacity:0;transform:scale(.7) translateY(4px)}40%{opacity:1;transform:scale(1.1) translateY(0)}70%{transform:scale(.97)}100%{opacity:1;transform:scale(1)}}
+        @keyframes savedFade {0%{opacity:1}70%{opacity:1}100%{opacity:0}}
         .btn-spring{transition:transform .15s cubic-bezier(.34,1.56,.64,1),background .3s,box-shadow .3s;}
         .btn-spring:hover{transform:scale(1.07);}
         .btn-spring:active{transform:scale(.94);}
@@ -570,9 +644,10 @@ useEffect(() => {
         .ot-strip{animation:stripSlide .4s ease;}
         .end-btn-ot{transition:all .2s ease;}
         .end-btn-ot:hover{transform:scale(1.04);background:rgba(212,168,67,0.25)!important;}
+        .saved-badge{animation:savedPop .35s cubic-bezier(.34,1.56,.64,1) forwards, savedFade 2.2s ease forwards;}
       `}</style>
 
-      {/* HEADER */}
+      {/* ── HEADER ── */}
       <header style={{position:"relative",zIndex:10,display:"flex",alignItems:"center",justifyContent:"space-between",padding:"20px 28px",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{width:8,height:8,borderRadius:"50%",background:dispColor,boxShadow:`0 0 12px ${dispColor}`,transition:"background .8s,box-shadow .8s",animation:isRunning?"pulse 2s infinite":"none"}}/>
@@ -581,25 +656,19 @@ useEffect(() => {
         </div>
 
         {user ? (
-          /* ── SIGNED IN: show avatar + name + sign-out ── */
           <div style={{display:"flex",alignItems:"center",gap:10}}>
             <div style={{textAlign:"right"}}>
               <div style={{fontSize:12.5,color:"#888",fontWeight:500}}>{user.displayName}</div>
               <div style={{fontSize:10,color:"#383838"}}>{user.email}</div>
             </div>
             <div style={{position:"relative"}}>
-              <img
-                src={user.photoURL}
-                alt={user.displayName}
+              <img src={user.photoURL} alt={user.displayName}
                 style={{width:34,height:34,borderRadius:"50%",border:`2px solid ${dispColor}`,objectFit:"cover",transition:"border-color .8s",cursor:"pointer"}}
-                title="Click to sign out"
-                onClick={handleSignOut}
-              />
+                title="Click to sign out" onClick={handleSignOut}/>
               <div style={{position:"absolute",bottom:-1,right:-1,width:10,height:10,borderRadius:"50%",background:"#6B9E78",border:"2px solid #0E0E10"}}/>
             </div>
           </div>
         ) : (
-          /* ── SIGNED OUT: sign-in button ── */
           <button className="btn-spring" onClick={()=>setShowAuth(true)} style={{background:"rgba(255,255,255,0.055)",border:"1px solid rgba(255,255,255,0.09)",color:"#999",borderRadius:8,padding:"7px 14px",fontSize:12.5,cursor:"pointer",fontFamily:"inherit"}}>
             Sign in with Google
           </button>
@@ -659,6 +728,7 @@ useEffect(() => {
                 )}
               </div>
             </div>
+
             {showPicker&&!isOvertime&&(
               <div style={{position:"absolute",left:"50%",top:"calc(100% + 12px)",transform:"translateX(-50%)",background:"#18181C",border:"1px solid rgba(255,255,255,0.1)",borderRadius:13,padding:14,zIndex:50,boxShadow:"0 24px 64px rgba(0,0,0,0.75)",animation:"slideDown .2s ease",minWidth:172}}>
                 <div style={{fontSize:9.5,color:"#3a3a3a",letterSpacing:".12em",marginBottom:9}}>DURATION</div>
@@ -729,7 +799,15 @@ useEffect(() => {
           </div>
           {tasks.length>0?(
             <div style={{borderTop:"1px solid rgba(255,255,255,0.04)"}}>
-              <TaskList tasks={tasks} taskStats={taskStats} activeTaskId={activeTaskId} setActiveTaskId={setATId} setTasks={setTasks} isRunning={isRunning} liveSession={liveSession} mode={mode} accentColor={dispColor} accentGlow={dispGlow}/>
+              {/* FIX 2: pass handleTaskSwitch so switching commits time first */}
+              <TaskList
+                tasks={tasks} taskStats={taskStats}
+                activeTaskId={activeTaskId}
+                onTaskSelect={handleTaskSwitch}   // ← was setActiveTaskId
+                setTasks={setTasks}
+                isRunning={isRunning} liveSession={liveSession}
+                mode={mode} accentColor={dispColor} accentGlow={dispGlow}
+              />
             </div>
           ):(
             <div style={{padding:"14px 18px",textAlign:"center",color:"#282828",fontSize:13}}>Add a category, then add sub-tasks inside it</div>
@@ -738,10 +816,25 @@ useEffect(() => {
 
         {/* ANALYTICS */}
         <section style={{background:"rgba(255,255,255,0.025)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:16,overflow:"hidden"}}>
+          {/* FIX 4: "Saved ✓" badge appears next to the Analytics header */}
           <button onClick={()=>setShowAn(p=>!p)} style={{width:"100%",background:"none",border:"none",padding:"15px 18px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",color:"#555",fontFamily:"inherit"}}>
-            <span style={{fontSize:11,letterSpacing:".1em"}}>ANALYTICS</span>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:11,letterSpacing:".1em"}}>ANALYTICS</span>
+              {showSaved&&(
+                <span key={savedTimerRef.current} className="saved-badge" style={{
+                  display:"inline-flex",alignItems:"center",gap:4,
+                  fontSize:10,fontWeight:500,color:"#6B9E78",
+                  background:"rgba(107,158,120,0.14)",
+                  border:"1px solid rgba(107,158,120,0.3)",
+                  borderRadius:20,padding:"2px 8px",letterSpacing:".04em",
+                }}>
+                  ✓ saved
+                </span>
+              )}
+            </div>
             <span style={{transform:showAn?"rotate(180deg)":"rotate(0)",transition:"transform .3s",fontSize:11}}>▼</span>
           </button>
+
           {showAn&&(
             <div className="analytics-slide" style={{borderTop:"1px solid rgba(255,255,255,0.04)"}}>
               <div style={{display:"flex",padding:"10px 14px 0",gap:2,borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
@@ -750,6 +843,7 @@ useEffect(() => {
                 ))}
               </div>
               <div style={{padding:"18px 18px 22px"}}>
+
                 {aTab==="overview"&&(
                   <div className="tab-content">
                     <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:16,background:streak>0?"rgba(107,158,120,0.07)":"rgba(255,255,255,0.02)",border:`1px solid ${streak>0?"rgba(107,158,120,0.2)":"rgba(255,255,255,0.05)"}`,borderRadius:13,padding:"14px 18px"}}>
@@ -771,11 +865,13 @@ useEffect(() => {
                     </div>
                   </div>
                 )}
+
                 {aTab==="deepdive"&&(
                   <div className="tab-content">
                     <DeepDive tasks={tasks} taskStats={taskStats} activeTaskId={activeTaskId} isRunning={isRunning} liveSession={liveSession} mode={mode} accentColor={dispColor}/>
                   </div>
                 )}
+
                 {aTab==="history"&&(
                   <div className="tab-content">
                     <CalendarGrid dailyStats={dailyStats} color={dispColor}/>
