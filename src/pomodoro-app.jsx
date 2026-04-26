@@ -8,7 +8,6 @@ const FOCUS_PRESETS  = [15, 25, 45, 60, 90];
 const SHORT_PRESETS  = [5, 10, 15];
 const LONG_PRESETS   = [15, 20, 30];
 const STREAK_MIN     = 25 * 60;
-const SYNC_INTERVAL  = 30_000;
 const OVERTIME_COLOR = "#D4A843";
 const OVERTIME_GLOW  = "rgba(212,168,67,.45)";
 
@@ -110,7 +109,7 @@ function CalendarGrid({ dailyStats, color }) {
       </div>
       <div style={{display:"flex",alignItems:"center",gap:5,marginTop:10,justifyContent:"flex-end"}}>
         <span style={{fontSize:9,color:"#333"}}>Less</span>
-        {[.15,.38,.62,.86].map(a=><div key={a} style={{width:10,height:10,borderRadius:2,background:`${color}${Math.round(a*255).toString(16).padStart(2,"0")}`}}/>)}
+        {[.15,.38,.62,.86].map(a=><div key={a} style={{width:10,height:10,borderRadius:2,background:`${color}${Math.round(a*255).toString(16).padStart(2,"00")}`}}/>)}
         <span style={{fontSize:9,color:"#333"}}>More</span>
       </div>
     </div>
@@ -162,8 +161,6 @@ function SummaryModal({ summary, onClose, accentColor, accentGlow }) {
 }
 
 // ─── TASK LIST ────────────────────────────────────────────────────────────────
-// FIX: accepts `onTaskSelect` instead of calling setActiveTaskId directly,
-// so the parent can commit time before switching.
 function TaskList({ tasks, taskStats, activeTaskId, onTaskSelect, setTasks, isRunning, liveSession, mode, accentColor, accentGlow }) {
   const [collapsed,setCollapsed]=useState(()=>load("pomo_collapsed",{}));
   useEffect(()=>save("pomo_collapsed",collapsed),[collapsed]);
@@ -326,31 +323,32 @@ export default function PomodoroApp() {
   const [liveSession,setLive]        = useState(0);
   const [summary,setSummary]         = useState(null);
 
-  // ── FIX 4: "Saved" visual confirmation state ──────────────────────────────
+  // ── "Saved" visual confirmation ───────────────────────────────────────────
   const [showSaved,setShowSaved]     = useState(false);
   const savedTimerRef                = useRef(null);
 
-  const tickRef     = useRef(null);
-  const sesSecsRef  = useRef(0);   // uncommitted seconds since last sync pulse
-  const sesStartRef = useRef(null);
-  const goalRef     = useRef(0);
-  const lastSync    = useRef(Date.now());
-  const modeRef     = useRef(mode);
-  const atIdRef     = useRef(activeTaskId);
-  const tasksRef    = useRef(tasks);
-  const otRef       = useRef(false);
-  const liveRef     = useRef(0);
-  const saveTimer   = useRef(null);
-  // FIX: keep isRunning accessible inside callbacks without stale closures
+  // ─── MASTER CLOCK REFS ────────────────────────────────────────────────────
+  const tickRef            = useRef(null);
+  const startTimeRef       = useRef(null);   // absolute wall-clock start (ms)
+  const durationAtStartRef = useRef(0);      // duration in seconds at the moment Start was pressed
+  const lastCommitTimeRef  = useRef(0);      // elapsed seconds at the last commit checkpoint
+
+  // Background-safe state mirrors
+  const modeRef      = useRef(mode);
+  const tasksRef     = useRef(tasks);
+  const atIdRef      = useRef(activeTaskId);
+  const liveRef      = useRef(0);
+  const otRef        = useRef(isOvertime);
   const isRunningRef = useRef(isRunning);
 
-  useEffect(()=>{ modeRef.current    = mode;         },[mode]);
-  useEffect(()=>{ atIdRef.current    = activeTaskId; },[activeTaskId]);
-  useEffect(()=>{ tasksRef.current   = tasks;        },[tasks]);
-  useEffect(()=>{ otRef.current      = isOvertime;   },[isOvertime]);
-  useEffect(()=>{ liveRef.current    = liveSession;  },[liveSession]);
-  useEffect(()=>{ isRunningRef.current = isRunning;  },[isRunning]);
+  // Sync state → refs immediately
+  useEffect(()=>{ modeRef.current     = mode;         },[mode]);
+  useEffect(()=>{ atIdRef.current     = activeTaskId; },[activeTaskId]);
+  useEffect(()=>{ tasksRef.current    = tasks;        },[tasks]);
+  useEffect(()=>{ otRef.current       = isOvertime;   },[isOvertime]);
+  useEffect(()=>{ isRunningRef.current= isRunning;    },[isRunning]);
 
+  // ── Persist to localStorage ───────────────────────────────────────────────
   useEffect(()=>save("pomo_tasks",      tasks),      [tasks]);
   useEffect(()=>save("pomo_dailyStats", dailyStats), [dailyStats]);
   useEffect(()=>save("pomo_taskStats",  taskStats),  [taskStats]);
@@ -358,7 +356,16 @@ export default function PomodoroApp() {
   useEffect(()=>save("pomo_sessions",   sessions),   [sessions]);
   useEffect(()=>{ if(Notification.permission==="default")Notification.requestPermission(); },[]);
 
-  // ── FIREBASE: Load user data ──────────────────────────────────────────────
+  // ── Firebase: debounced Firestore save ───────────────────────────────────
+  const saveTimer = useRef(null);
+  const saveToFirestore = useCallback((uid, data) => {
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async()=>{
+      try{ await setDoc(doc(db,"users",uid), data, {merge:true}); }
+      catch(err){ console.error("Firestore save error:",err); }
+    }, 2000);
+  },[]);
+
   const loadFromFirestore = async (uid) => {
     try {
       const snap = await getDoc(doc(db,"users",uid));
@@ -372,16 +379,6 @@ export default function PomodoroApp() {
     } catch(err){ console.error("Firestore load error:",err); }
   };
 
-  // ── FIREBASE: Save (debounced 2s) ─────────────────────────────────────────
-  const saveToFirestore = useCallback((uid, data) => {
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async()=>{
-      try{ await setDoc(doc(db,"users",uid), data, {merge:true}); }
-      catch(err){ console.error("Firestore save error:",err); }
-    }, 2000);
-  },[]);
-
-  // ── FIREBASE: Auth state listener ────────────────────────────────────────
   useEffect(()=>{
     const unsub = onAuthStateChanged(auth, async(firebaseUser)=>{
       if(firebaseUser){
@@ -395,13 +392,11 @@ export default function PomodoroApp() {
     return ()=>unsub();
   },[]);
 
-  // ── FIREBASE: Auto-save on data change ───────────────────────────────────
   useEffect(()=>{
     if(!user) return;
     saveToFirestore(user.uid,{tasks,dailyStats,taskStats,sessions});
   },[tasks,dailyStats,taskStats,sessions,user,saveToFirestore]);
 
-  // ── FIREBASE: Auth actions ────────────────────────────────────────────────
   const handleSignIn = async()=>{
     try{ const r=await signInWithPopup(auth,provider); setUser(r.user); setShowAuth(false); }
     catch(err){ console.error("Sign-in error:",err); alert(err.message); }
@@ -411,164 +406,204 @@ export default function PomodoroApp() {
     catch(err){ console.error("Sign-out error:",err); }
   };
 
-  // ── FIX 4: trigger "Saved ✓" flash ───────────────────────────────────────
-  // Called by endSession and handleTaskSwitch to flash the saved indicator.
+  // ── "Saved ✓" flash helper ────────────────────────────────────────────────
   const triggerSaved = useCallback(()=>{
     setShowSaved(true);
     clearTimeout(savedTimerRef.current);
     savedTimerRef.current = setTimeout(()=>setShowSaved(false), 2200);
   },[]);
 
-  // ── FIX 3: bubble-up commit — sub-task time goes to parent too ───────────
-  // Reads atIdRef (the task that was active WHEN this is called, i.e. the
-  // OLD task during a switch), so it must be called BEFORE updating atIdRef.
-  const commitSeconds = useCallback((secs)=>{
-    if(secs<=0 || modeRef.current!=="focus") return;
-    const today   = todayKey();
-    const taskId  = atIdRef.current;
-    const task    = tasksRef.current.find(t=>t.id===taskId);
-    const parentId= task?.parentId || null;            // sub-category → also credit parent
-
-    setDS(p=>({...p,[today]:(p[today]||0)+secs}));
-    if(taskId)   setTS(p=>({...p,[taskId]:(p[taskId]||0)+secs}));
-    if(parentId) setTS(p=>({...p,[parentId]:(p[parentId]||0)+secs})); // FIX 3
-  },[]);
-
-  const commitSession = useCallback((goalSecs,totalSecs)=>{
-    if(totalSecs<5 || modeRef.current!=="focus") return;
+  // ── commitSession: log to session history ────────────────────────────────
+  const commitSession = useCallback((goalSecs, totalSecs)=>{
+    if(totalSecs < 5 || modeRef.current !== "focus") return;
     setSessions(p=>[...p,{
-      id:uid(), taskId:atIdRef.current,
-      durationSeconds:totalSecs, goalSeconds:goalSecs,
-      overtimeSeconds:Math.max(0,totalSecs-goalSecs),
-      startedAt:sesStartRef.current||Date.now()-totalSecs*1000,
-      date:todayKey(),
+      id: uid(), taskId: atIdRef.current,
+      durationSeconds: totalSecs, goalSeconds: goalSecs,
+      overtimeSeconds: Math.max(0, totalSecs - goalSecs),
+      startedAt: startTimeRef.current || Date.now() - totalSecs * 1000,
+      date: todayKey(),
     }]);
   },[]);
 
-  // ── TICK ─────────────────────────────────────────────────────────────────
-  useEffect(()=>{
-    if(isRunning){
-      tickRef.current=setInterval(()=>{
-        setTimeLeft(prev=>{
-          if(prev===1&&!otRef.current){
-            setOT(true); otRef.current=true;
-            if(Notification.permission==="granted")
-              new Notification("Zenflow",{body:"Goal reached! Timer running in overtime 🔥"});
-          }
-          sesSecsRef.current+=1;
-          setLive(s=>{ liveRef.current=s+1; return s+1; });
-          if(Date.now()-lastSync.current>=SYNC_INTERVAL){
-            commitSeconds(sesSecsRef.current);
-            sesSecsRef.current=0;
-            lastSync.current=Date.now();
-          }
-          return prev-1;
-        });
-      },1000);
-    } else clearInterval(tickRef.current);
-    return ()=>clearInterval(tickRef.current);
-  },[isRunning,commitSeconds]);
+  // ─── LIVE DATA SYNC ───────────────────────────────────────────────────────
+  // Commits a delta of seconds to daily + task + parent stats.
+  // Always reads atIdRef so it's safe to call from inside the timer tick.
+  const commitRealTimeProgress = useCallback((secondsToCommit) => {
+    if (secondsToCommit <= 0 || modeRef.current !== "focus") return;
 
-  useEffect(()=>{ if(isOvertime&&!chimeFired){ playChime(); setChime(true); } },[isOvertime,chimeFired]);
+    const today = todayKey();
+    const tid   = atIdRef.current;
+    const task  = tasksRef.current.find(t => t.id === tid);
 
-  // ── FIX 1: endSession — guaranteed final sync before stopping ────────────
-  const endSession = useCallback(()=>{
-    // Stop the interval immediately so no more ticks accumulate
-    clearInterval(tickRef.current);
+    setDS(prev => ({ ...prev, [today]: (prev[today] || 0) + secondsToCommit }));
 
-    // Final live-pulse: commit every second accumulated since the last 30s sync
-    if(sesSecsRef.current > 0){
-      commitSeconds(sesSecsRef.current);
-      sesSecsRef.current = 0;
+    if (tid) {
+      setTS(prev => {
+        const next = { ...prev, [tid]: (prev[tid] || 0) + secondsToCommit };
+        if (task?.parentId) {
+          next[task.parentId] = (next[task.parentId] || 0) + secondsToCommit;
+        }
+        return next;
+      });
     }
+  }, []);
 
-    const total = liveRef.current;
-    const goal  = goalRef.current;
+  // ─── THE SYSTEM-CLOCK TICK ────────────────────────────────────────────────
+  // Derives all display values from Date.now() so browser tab throttling
+  // (which can slow setInterval to ~1 tick/minute) never causes drift.
+  const updateTimer = useCallback(() => {
+    if (!startTimeRef.current) return;
 
-    // Log the completed session (sub-5s sessions are ignored inside commitSession)
-    commitSession(goal, total);
+    const now        = Date.now();
+    const elapsedMs  = now - startTimeRef.current;
+    const elapsedSecs = Math.floor(elapsedMs / 1000);
 
-    // Resolve task/parent for summary
-    const taskId = atIdRef.current;
-    const task   = tasksRef.current.find(t=>t.id===taskId);
-    const parent = task?.parentId ? tasksRef.current.find(t=>t.id===task.parentId) : null;
+    const newTimeLeft = durationAtStartRef.current - elapsedSecs;
+    setTimeLeft(newTimeLeft);
 
-    setSummary({
-      goalSeconds:     goal,
-      overtimeSeconds: Math.max(0, total-goal),
-      taskName:        task?.name  || null,
-      parentName:      parent?.name|| null,
-    });
+    setLive(elapsedSecs);
+    liveRef.current = elapsedSecs;
 
-    // FIX 4: flash "Saved ✓"
-    triggerSaved();
-
-    // Reset running state
-    sesSecsRef.current=0; setRunning(false);
-    setOT(false); otRef.current=false;
-    setChime(false); setLive(0); liveRef.current=0;
-    setTimeLeft(duration);
-  },[duration, commitSeconds, commitSession, triggerSaved]);
-
-  // ── FIX 2: handleTaskSwitch — commit then switch ──────────────────────────
-  // This replaces direct calls to setATId from the task list.
-  // A: momentarily pauses accumulation (sesSecsRef checkpoint)
-  // B: commits elapsed seconds to the CURRENT (old) task + its parent
-  // C: updates activeTaskId to the new task
-  // D: timer continues uninterrupted (interval keeps running)
-  const handleTaskSwitch = useCallback((newTaskId)=>{
-    if(newTaskId === atIdRef.current) return;          // tapping same task — no-op
-
-    if(isRunningRef.current && sesSecsRef.current > 0){
-      // B: lock in accumulated seconds to the OLD task before switching
-      commitSeconds(sesSecsRef.current);               // reads atIdRef (still old task)
-      sesSecsRef.current = 0;                          // reset the accumulator
-      lastSync.current   = Date.now();                 // reset sync clock
-      triggerSaved();                                  // FIX 4: flash confirmation
-    }
-
-    // C: switch to new task (atIdRef updates via useEffect)
-    setATId(newTaskId);
-    // D: interval keeps running — no pause needed
-  },[commitSeconds, triggerSaved]);
-
-  // ── Timer controls ────────────────────────────────────────────────────────
-  const toggleTimer=()=>{
-    if(!isRunning){
-      if(timeLeft===duration){
-        sesStartRef.current=Date.now();
-        goalRef.current=duration;
-        setOT(false); otRef.current=false; setChime(false);
+    // Trigger overtime + chime exactly once
+    if (newTimeLeft <= 0 && !otRef.current) {
+      setOT(true);
+      otRef.current = true;
+      playChime();
+      setChime(true);
+      if (Notification.permission === "granted") {
+        new Notification("Zenflow", { body: "Goal reached! Timer running in overtime 🔥" });
       }
+    }
+
+    // Commit to stats every 30 elapsed seconds
+    if (elapsedSecs - lastCommitTimeRef.current >= 30) {
+      commitRealTimeProgress(elapsedSecs - lastCommitTimeRef.current);
+      lastCommitTimeRef.current = elapsedSecs;
+    }
+  }, [commitRealTimeProgress]);
+
+  // ─── BACKGROUND TAB RESYNC ────────────────────────────────────────────────
+  // When the user returns from another tab/app the interval may have fired
+  // only a handful of times. On visibility restore we snap to real time instantly.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && isRunningRef.current) {
+        updateTimer();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [updateTimer]);
+
+  // ─── START / PAUSE ────────────────────────────────────────────────────────
+  const toggleTimer = () => {
+    if (!isRunning) {
+      // If resuming after a pause, pretend we started liveRef.current seconds ago
+      // so elapsed time is continuous without re-counting the paused gap.
+      startTimeRef.current       = Date.now() - (liveRef.current * 1000);
+      durationAtStartRef.current = duration;
+      lastCommitTimeRef.current  = liveRef.current; // don't re-commit already-committed secs
       setRunning(true);
+      tickRef.current = setInterval(updateTimer, 1000);
     } else {
-      commitSeconds(sesSecsRef.current);
-      sesSecsRef.current=0;
+      clearInterval(tickRef.current);
+      // Flush any uncommitted seconds accumulated since the last 30s checkpoint
+      const uncommitted = liveRef.current - lastCommitTimeRef.current;
+      commitRealTimeProgress(uncommitted);
+      lastCommitTimeRef.current = liveRef.current;
+      triggerSaved();
       setRunning(false);
     }
   };
 
-  const resetTimer=()=>{
-    if(isRunning){ commitSeconds(sesSecsRef.current); sesSecsRef.current=0; }
+  // ─── TASK SWITCHER ────────────────────────────────────────────────────────
+  // Commits seconds earned on the OLD task before switching the active pointer.
+  // The interval keeps running — no pause is needed.
+  const handleTaskSwitch = useCallback((newId) => {
+    if (newId === atIdRef.current) return;
+
+    if (isRunningRef.current) {
+      const uncommitted = liveRef.current - lastCommitTimeRef.current;
+      commitRealTimeProgress(uncommitted);   // credits OLD task + its parent
+      lastCommitTimeRef.current = liveRef.current;
+      triggerSaved();
+    }
+
+    setATId(newId);   // atIdRef updates via useEffect
+  }, [commitRealTimeProgress, triggerSaved]);
+
+  // ─── END SESSION ──────────────────────────────────────────────────────────
+  const endSession = useCallback(() => {
+    clearInterval(tickRef.current);
+
+    // Flush remaining uncommitted seconds
+    const uncommitted = liveRef.current - lastCommitTimeRef.current;
+    commitRealTimeProgress(uncommitted);
+
+    // Log to history
+    commitSession(duration, liveRef.current);
+
+    // Build summary for modal
+    const task   = tasksRef.current.find(t => t.id === atIdRef.current);
+    const parent = task?.parentId ? tasksRef.current.find(t => t.id === task.parentId) : null;
+    setSummary({
+      goalSeconds:     duration,
+      overtimeSeconds: Math.max(0, liveRef.current - duration),
+      taskName:        task?.name   || null,
+      parentName:      parent?.name || null,
+    });
+
+    triggerSaved();
+
+    // Full reset
+    setRunning(false);
+    setLive(0);
+    liveRef.current    = 0;
+    startTimeRef.current = null;
+    lastCommitTimeRef.current = 0;
+    setTimeLeft(duration);
+    setOT(false);
+    otRef.current = false;
+    setChime(false);
+  }, [commitRealTimeProgress, commitSession, duration, triggerSaved]);
+
+  // ─── MODE / DURATION CONTROLS ─────────────────────────────────────────────
+  const resetTimer = () => {
+    clearInterval(tickRef.current);
+    if (isRunning) {
+      const uncommitted = liveRef.current - lastCommitTimeRef.current;
+      commitRealTimeProgress(uncommitted);
+    }
     setRunning(false); setOT(false); otRef.current=false; setChime(false);
     setTimeLeft(duration); setLive(0); liveRef.current=0;
+    startTimeRef.current=null; lastCommitTimeRef.current=0;
   };
 
-  const switchMode=m=>{
-    if(isRunning){ commitSeconds(sesSecsRef.current); sesSecsRef.current=0; }
+  const switchMode = m => {
+    clearInterval(tickRef.current);
+    if (isRunning) {
+      const uncommitted = liveRef.current - lastCommitTimeRef.current;
+      commitRealTimeProgress(uncommitted);
+    }
     setRunning(false); setOT(false); otRef.current=false; setChime(false);
     setMode(m); const mins=MODES[m].default;
     setSelMins(mins); setDuration(mins*60); setTimeLeft(mins*60);
-    setLive(0); liveRef.current=0; setPicker(false);
+    setLive(0); liveRef.current=0;
+    startTimeRef.current=null; lastCommitTimeRef.current=0;
+    setPicker(false);
   };
 
-  const selectDur=mins=>{
-    setSelMins(mins); const secs=mins*60; setDuration(secs); setTimeLeft(secs);
+  const selectDur = mins => {
+    clearInterval(tickRef.current);
+    setSelMins(mins); const secs=mins*60;
+    setDuration(secs); setTimeLeft(secs);
     setRunning(false); setOT(false); otRef.current=false; setChime(false);
-    sesSecsRef.current=0; setLive(0); liveRef.current=0; setPicker(false);
+    setLive(0); liveRef.current=0;
+    startTimeRef.current=null; lastCommitTimeRef.current=0;
+    setPicker(false);
   };
 
-  const handleAdd=e=>{
+  const handleAdd = e => {
     e.preventDefault(); const name=newTask.trim(); if(!name)return;
     const activeTask=tasks.find(t=>t.id===activeTaskId);
     let parentId=null;
@@ -578,7 +613,7 @@ export default function PomodoroApp() {
     setNewTask(""); inputRef.current?.focus();
   };
 
-  // ── Derived values ────────────────────────────────────────────────────────
+  // ─── DERIVED VALUES ───────────────────────────────────────────────────────
   const cfg       = MODES[mode];
   const dispColor = isOvertime&&mode==="focus" ? OVERTIME_COLOR : cfg.color;
   const dispGlow  = isOvertime&&mode==="focus" ? OVERTIME_GLOW  : cfg.glow;
@@ -593,10 +628,10 @@ export default function PomodoroApp() {
   const activeTask   = tasks.find(t=>t.id===activeTaskId);
   const activeParent = activeTask?.parentId ? tasks.find(t=>t.id===activeTask.parentId) : null;
   const R=120, CIRC=2*Math.PI*R;
-  const dashOff    = isOvertime ? 0 : CIRC*(1-Math.max(0,timeLeft)/duration);
+  const dashOff      = isOvertime ? 0 : CIRC*(1-Math.max(0,timeLeft)/duration);
   const overtimeSecs = isOvertime ? Math.abs(timeLeft) : 0;
 
-  // ── Auth loading splash ───────────────────────────────────────────────────
+  // ─── AUTH LOADING SPLASH ─────────────────────────────────────────────────
   if(authLoading){
     return(
       <div style={{minHeight:"100vh",background:"#0E0E10",display:"flex",alignItems:"center",justifyContent:"center"}}>
@@ -799,11 +834,10 @@ export default function PomodoroApp() {
           </div>
           {tasks.length>0?(
             <div style={{borderTop:"1px solid rgba(255,255,255,0.04)"}}>
-              {/* FIX 2: pass handleTaskSwitch so switching commits time first */}
               <TaskList
                 tasks={tasks} taskStats={taskStats}
                 activeTaskId={activeTaskId}
-                onTaskSelect={handleTaskSwitch}   // ← was setActiveTaskId
+                onTaskSelect={handleTaskSwitch}
                 setTasks={setTasks}
                 isRunning={isRunning} liveSession={liveSession}
                 mode={mode} accentColor={dispColor} accentGlow={dispGlow}
@@ -816,12 +850,11 @@ export default function PomodoroApp() {
 
         {/* ANALYTICS */}
         <section style={{background:"rgba(255,255,255,0.025)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:16,overflow:"hidden"}}>
-          {/* FIX 4: "Saved ✓" badge appears next to the Analytics header */}
           <button onClick={()=>setShowAn(p=>!p)} style={{width:"100%",background:"none",border:"none",padding:"15px 18px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",color:"#555",fontFamily:"inherit"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
               <span style={{fontSize:11,letterSpacing:".1em"}}>ANALYTICS</span>
               {showSaved&&(
-                <span key={savedTimerRef.current} className="saved-badge" style={{
+                <span key={Date.now()} className="saved-badge" style={{
                   display:"inline-flex",alignItems:"center",gap:4,
                   fontSize:10,fontWeight:500,color:"#6B9E78",
                   background:"rgba(107,158,120,0.14)",
