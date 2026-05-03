@@ -295,110 +295,342 @@ function DeepDive({ tasks, taskStats, activeTaskId, isRunning, liveSession, mode
   );
 }
 
-// ─── URL → EMBED CONVERTER ────────────────────────────────────────────────────
-function toEmbedUrl(raw) {
-  try {
-    const url = raw.trim();
-    // Apple Music: https://music.apple.com/... → https://embed.music.apple.com/...
-    if (url.includes("music.apple.com")) {
-      return url.replace("https://music.apple.com", "https://embed.music.apple.com");
+// ─── AMBIENT SOUNDS ───────────────────────────────────────────────────────────
+const AMBIENT_TRACKS = [
+  { id:"rain",       label:"Rain",        emoji:"🌧",  src:"/sounds/rain.mp3"       },
+  { id:"cafe",       label:"Café",        emoji:"☕",  src:"/sounds/cafe.mp3"       },
+  { id:"fireplace",  label:"Fireplace",   emoji:"🔥",  src:"/sounds/fireplace.mp3"  },
+  { id:"wind",       label:"Wind",        emoji:"🌬",  src:"/sounds/wind.mp3"       },
+  { id:"brownnoise", label:"Brown Noise", emoji:"〰",  src:"/sounds/brownnoise.mp3" },
+];
+
+// ─── AMBIENT MIXER COMPONENT ──────────────────────────────────────────────────
+function AmbientMixer({ onClose, accentColor }) {
+  // volumes: { rain: 0, cafe: 0, ... }  — persisted across sessions
+  const [volumes, setVolumes] = useState(() =>
+    load("pomo_ambient_volumes", Object.fromEntries(AMBIENT_TRACKS.map(t => [t.id, 0])))
+  );
+  const audioRefs = useRef({}); // { rain: <audio>, cafe: <audio>, ... }
+
+  // Persist volumes whenever they change
+  useEffect(() => { save("pomo_ambient_volumes", volumes); }, [volumes]);
+
+  // On mount: restore volumes + play state for tracks that were > 0
+  useEffect(() => {
+    AMBIENT_TRACKS.forEach(({ id }) => {
+      const el = audioRefs.current[id];
+      if (!el) return;
+      el.volume = volumes[id];
+      if (volumes[id] > 0) {
+        el.play().catch(() => {}); // browsers may block autoplay until user gesture
+      }
+    });
+    // Only run on mount — intentionally omitting `volumes` from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleVolume = (id, raw) => {
+    const v = parseFloat(raw);
+    const el = audioRefs.current[id];
+    if (el) {
+      el.volume = v;
+      if (v > 0) { el.play().catch(() => {}); }
+      else        { el.pause(); }
     }
-    // Spotify: https://open.spotify.com/playlist/ID → https://open.spotify.com/embed/playlist/ID
-    if (url.includes("open.spotify.com")) {
-      // already an embed link — pass through
-      if (url.includes("/embed/")) return url;
-      const u = new URL(url);
-      // e.g. /playlist/37i9dQZF1DXcBWIGoYBM5M → /embed/playlist/37i9dQZF1DXcBWIGoYBM5M
-      u.pathname = "/embed" + u.pathname;
-      u.searchParams.set("utm_source", "zenflow");
-      return u.toString();
-    }
-    return null; // unknown service
-  } catch { return null; }
+    setVolumes(prev => ({ ...prev, [id]: v }));
+  };
+
+  const anyPlaying = AMBIENT_TRACKS.some(t => volumes[t.id] > 0);
+
+  return (
+    <div className="music-widget" style={{
+      position:"fixed", bottom:24, right:24, zIndex:285,
+      width:272,
+      background:"rgba(13,13,17,0.93)",
+      backdropFilter:"blur(32px) saturate(1.7)",
+      WebkitBackdropFilter:"blur(32px) saturate(1.7)",
+      border:"1px solid rgba(255,255,255,0.09)",
+      borderRadius:16, overflow:"hidden",
+      boxShadow:"0 28px 72px rgba(0,0,0,0.82), 0 0 0 1px rgba(255,255,255,0.04) inset",
+    }}>
+      {/* Hidden audio elements — keyed by id, never re-mounted */}
+      {AMBIENT_TRACKS.map(({ id, src }) => (
+        <audio
+          key={id}
+          ref={el => { audioRefs.current[id] = el; }}
+          src={src}
+          loop
+          preload="none"
+          style={{ display:"none" }}
+        />
+      ))}
+
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 14px",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:13}}>🎧</span>
+          <span style={{fontSize:10.5,fontWeight:500,letterSpacing:".08em",color: anyPlaying ? accentColor : "#666", transition:"color .4s"}}>
+            AMBIENT MIXER
+          </span>
+          {anyPlaying && (
+            <span style={{
+              display:"inline-block", width:6, height:6, borderRadius:"50%",
+              background: accentColor, boxShadow:`0 0 7px ${accentColor}`,
+              animation:"pulse 2s ease-in-out infinite",
+            }}/>
+          )}
+        </div>
+        <button onClick={onClose} style={{background:"none",border:"none",color:"#383838",cursor:"pointer",fontSize:16,lineHeight:1,padding:"0 2px",transition:"color .2s"}}
+          onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#383838"}>×</button>
+      </div>
+
+      {/* Track sliders */}
+      <div style={{padding:"12px 14px 14px",display:"flex",flexDirection:"column",gap:12}}>
+        {AMBIENT_TRACKS.map(({ id, label, emoji }) => {
+          const vol    = volumes[id];
+          const active = vol > 0;
+          return (
+            <div key={id} style={{display:"flex",alignItems:"center",gap:10}}>
+              {/* Emoji + glow indicator */}
+              <div style={{
+                width:28, height:28, borderRadius:8, flexShrink:0,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontSize:14,
+                background: active ? `${accentColor}1a` : "rgba(255,255,255,0.04)",
+                border: `1px solid ${active ? accentColor+"44" : "rgba(255,255,255,0.07)"}`,
+                boxShadow: active ? `0 0 10px ${accentColor}44` : "none",
+                transition:"all .35s ease",
+              }}>
+                {emoji}
+              </div>
+
+              {/* Label */}
+              <span style={{
+                fontSize:12, fontWeight:400, minWidth:70, flexShrink:0,
+                color: active ? "#ccc" : "#454545",
+                transition:"color .3s",
+              }}>{label}</span>
+
+              {/* Volume slider */}
+              <div style={{flex:1, position:"relative"}}>
+                <style>{`
+                  .ambient-slider-${id}{-webkit-appearance:none;appearance:none;width:100%;height:3px;border-radius:3px;outline:none;cursor:pointer;background:linear-gradient(to right,${accentColor} 0%,${accentColor} ${vol*100}%,rgba(255,255,255,0.08) ${vol*100}%,rgba(255,255,255,0.08) 100%);}
+                  .ambient-slider-${id}::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:${active ? accentColor : "#3a3a3a"};box-shadow:${active ? `0 0 8px ${accentColor}99` : "none"};transition:background .3s,box-shadow .3s,transform .15s;cursor:grab;}
+                  .ambient-slider-${id}::-webkit-slider-thumb:active{transform:scale(1.25);}
+                  .ambient-slider-${id}::-moz-range-thumb{width:13px;height:13px;border:none;border-radius:50%;background:${active ? accentColor : "#3a3a3a"};cursor:grab;}
+                `}</style>
+                <input
+                  type="range" min="0" max="1" step="0.01"
+                  value={vol}
+                  className={`ambient-slider-${id}`}
+                  onChange={e => handleVolume(id, e.target.value)}
+                />
+              </div>
+            </div>
+          );
+        })}
+
+        {/* All-off convenience button */}
+        {anyPlaying && (
+          <button
+            onClick={() => {
+              AMBIENT_TRACKS.forEach(({ id }) => {
+                const el = audioRefs.current[id];
+                if (el) el.pause();
+              });
+              setVolumes(Object.fromEntries(AMBIENT_TRACKS.map(t => [t.id, 0])));
+            }}
+            style={{
+              marginTop:2, background:"rgba(255,255,255,0.05)",
+              border:"1px solid rgba(255,255,255,0.08)", borderRadius:8,
+              padding:"6px 0", color:"#555", fontSize:11.5,
+              cursor:"pointer", fontFamily:"inherit", letterSpacing:".04em",
+              transition:"all .2s",
+            }}
+            onMouseOver={e=>{e.currentTarget.style.background="rgba(255,255,255,0.1)";e.currentTarget.style.color="#aaa";}}
+            onMouseOut={e=>{e.currentTarget.style.background="rgba(255,255,255,0.05)";e.currentTarget.style.color="#555";}}
+          >
+            Stop all sounds
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
-function iframeProps(embedUrl) {
-  if (!embedUrl) return {};
-  const isSpotify = embedUrl.includes("spotify.com");
-  return {
-    allow: isSpotify
-      ? "autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-      : "autoplay *; encrypted-media *; fullscreen *; clipboard-write",
-    sandbox: "allow-forms allow-popups allow-same-origin allow-scripts allow-top-navigation-by-user-activation",
-    height: isSpotify ? 152 : 150,
-  };
+// ─── URL → EMBED CONVERTER ────────────────────────────────────────────────────
+// Returns { embedUrl, service } or null for unrecognised links.
+function parseAudioUrl(raw) {
+  try {
+    const url = raw.trim();
+
+    // ── YouTube ──────────────────────────────────────────────────────────────
+    // Handles watch?v=, youtu.be/, /live/, /shorts/, playlist?list=
+    if (url.includes("youtube.com") || url.includes("youtu.be")) {
+      let videoId   = null;
+      let listId    = null;
+      const u       = new URL(url);
+
+      // youtu.be/<id>
+      if (u.hostname === "youtu.be") {
+        videoId = u.pathname.slice(1).split("?")[0];
+      } else {
+        videoId = u.searchParams.get("v")
+          || (u.pathname.match(/\/(?:shorts|live)\/([^/?]+)/) || [])[1]
+          || null;
+        listId  = u.searchParams.get("list") || null;
+      }
+
+      const embed = new URL("https://www.youtube.com/embed/" + (videoId || "videoseries"));
+      embed.searchParams.set("autoplay", "1");
+      embed.searchParams.set("rel", "0");
+      if (!videoId && listId) embed.searchParams.set("list", listId);
+      if (videoId && listId) { embed.searchParams.set("list", listId); embed.searchParams.set("index", "1"); }
+      return { embedUrl: embed.toString(), service: "youtube" };
+    }
+
+    // ── SoundCloud ───────────────────────────────────────────────────────────
+    // SoundCloud requires an oEmbed resolution step (done async in the widget).
+    // Return a sentinel so the widget knows to trigger the fetch.
+    if (url.includes("soundcloud.com")) {
+      return { embedUrl: null, service: "soundcloud", rawUrl: url };
+    }
+
+    return null;
+  } catch { return null; }
 }
 
 // ─── AUDIO WIDGET ─────────────────────────────────────────────────────────────
 function AudioWidget({ onClose }) {
-  const [rawUrl, setRawUrl]     = useState(() => load("pomo_audio_url", ""));
-  const [inputVal, setInputVal] = useState(() => load("pomo_audio_url", ""));
+  const [savedUrl, setSavedUrl]     = useState(() => load("pomo_audio_url", ""));
+  const [inputVal, setInputVal]     = useState(() => load("pomo_audio_url", ""));
   const [inputFocus, setInputFocus] = useState(false);
-  const embedUrl = rawUrl ? toEmbedUrl(rawUrl) : null;
-  const isSpotify = embedUrl?.includes("spotify.com");
+  const [scEmbedUrl, setScEmbedUrl] = useState(null);   // resolved SoundCloud iframe src
+  const [scLoading, setScLoading]   = useState(false);
+  const [scError, setScError]       = useState(false);
+
+  const parsed   = savedUrl ? parseAudioUrl(savedUrl) : null;
+  const service  = parsed?.service || null;
+  const embedUrl = service === "youtube"
+    ? parsed.embedUrl
+    : service === "soundcloud" ? scEmbedUrl : null;
+
+  // When savedUrl changes to a SoundCloud link, resolve it via oEmbed
+  useEffect(() => {
+    if (service !== "soundcloud") { setScEmbedUrl(null); setScError(false); return; }
+    let cancelled = false;
+    setScLoading(true); setScError(false); setScEmbedUrl(null);
+    const oembed = `https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(savedUrl)}`;
+    fetch(oembed)
+      .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+      .then(data => {
+        if (cancelled) return;
+        // oEmbed returns HTML like <iframe src="..."></iframe> — extract the src
+        const match = data.html?.match(/src="([^"]+)"/);
+        if (match) {
+          // Ensure auto_play=true is in the URL
+          const src = new URL(match[1]);
+          src.searchParams.set("auto_play", "true");
+          src.searchParams.set("color", "6b9e78");
+          src.searchParams.set("show_artwork", "true");
+          setScEmbedUrl(src.toString());
+        } else throw new Error();
+      })
+      .catch(() => { if (!cancelled) setScError(true); })
+      .finally(() => { if (!cancelled) setScLoading(false); });
+    return () => { cancelled = true; };
+  }, [savedUrl, service]);
 
   const handleSubmit = e => {
     e.preventDefault();
     const trimmed = inputVal.trim();
-    setRawUrl(trimmed);
+    setSavedUrl(trimmed);
     save("pomo_audio_url", trimmed);
   };
 
   const handleClear = () => {
-    setRawUrl(""); setInputVal("");
+    setSavedUrl(""); setInputVal("");
+    setScEmbedUrl(null); setScError(false);
     save("pomo_audio_url", "");
   };
 
-  const serviceLabel = !embedUrl ? "MUSIC PLAYER"
-    : isSpotify ? "SPOTIFY" : "APPLE MUSIC";
-  const serviceColor = isSpotify ? "#1DB954" : "#C97D5B";
+  const SERVICE_META = {
+    youtube:    { label:"YOUTUBE",    color:"#FF4444" },
+    soundcloud: { label:"SOUNDCLOUD", color:"#FF5500" },
+  };
+  const meta       = service ? SERVICE_META[service] : null;
+  const iconColor  = meta?.color || "#555";
+  const serviceLabel = meta?.label || "MUSIC PLAYER";
+
+  // iframe height: YouTube taller (video), SoundCloud compact
+  const iframeHeight = service === "youtube" ? 168 : 140;
+
+  const inputBadUrl = inputVal && !parseAudioUrl(inputVal.trim());
 
   return (
     <div className="music-widget" style={{
       position:"fixed", bottom:24, left:24, zIndex:290,
-      width:296,
-      background:"rgba(14,14,18,0.90)",
-      backdropFilter:"blur(32px) saturate(1.6)",
-      WebkitBackdropFilter:"blur(32px) saturate(1.6)",
+      width:300,
+      background:"rgba(13,13,17,0.92)",
+      backdropFilter:"blur(32px) saturate(1.7)",
+      WebkitBackdropFilter:"blur(32px) saturate(1.7)",
       border:"1px solid rgba(255,255,255,0.09)",
       borderRadius:16, overflow:"hidden",
-      boxShadow:"0 24px 64px rgba(0,0,0,0.75), 0 0 0 1px rgba(255,255,255,0.04) inset",
+      boxShadow:"0 28px 72px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.04) inset",
     }}>
-      {/* Header */}
+      {/* ── Header ── */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
         <div style={{display:"flex",alignItems:"center",gap:7}}>
+          {/* Music note icon */}
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-            <path d="M9 18V5l12-2v13" stroke={embedUrl ? serviceColor : "#555"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-            <circle cx="6" cy="18" r="3" stroke={embedUrl ? serviceColor : "#555"} strokeWidth="1.8"/>
-            <circle cx="18" cy="16" r="3" stroke={embedUrl ? serviceColor : "#555"} strokeWidth="1.8"/>
+            <path d="M9 18V5l12-2v13" stroke={iconColor} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+            <circle cx="6" cy="18" r="3" stroke={iconColor} strokeWidth="1.8"/>
+            <circle cx="18" cy="16" r="3" stroke={iconColor} strokeWidth="1.8"/>
           </svg>
-          <span style={{fontSize:10.5,fontWeight:500,color: embedUrl ? serviceColor : "#555",letterSpacing:".08em",transition:"color .4s"}}>{serviceLabel}</span>
+          <span style={{fontSize:10.5,fontWeight:500,color:iconColor,letterSpacing:".08em",transition:"color .4s"}}>{serviceLabel}</span>
+          {scLoading&&<span style={{fontSize:9.5,color:"#555",letterSpacing:".05em"}}>resolving…</span>}
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          {rawUrl && <button onClick={handleClear} style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:10.5,fontFamily:"inherit",transition:"color .2s",letterSpacing:".04em"}} onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#333"}>clear</button>}
+          {savedUrl&&<button onClick={handleClear} style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:10.5,fontFamily:"inherit",transition:"color .2s",letterSpacing:".04em"}} onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#333"}>clear</button>}
           <button onClick={onClose} style={{background:"none",border:"none",color:"#383838",cursor:"pointer",fontSize:16,lineHeight:1,padding:"0 2px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#383838"}>×</button>
         </div>
       </div>
 
-      {/* Embed iframe — only shown when a valid URL is converted */}
-      {embedUrl && (
-        <iframe
-          key={embedUrl}
-          src={embedUrl}
-          height={iframeProps(embedUrl).height}
-          allow={iframeProps(embedUrl).allow}
-          sandbox={iframeProps(embedUrl).sandbox}
-          frameBorder="0"
-          style={{width:"100%",display:"block",background:"transparent"}}
-          title="Music Player"
-        />
+      {/* ── Player iframe ── */}
+      {embedUrl&&(
+        <div style={{position:"relative",background:"#000"}}>
+          <iframe
+            key={embedUrl}
+            src={embedUrl}
+            height={iframeHeight}
+            allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+            allowFullScreen
+            frameBorder="0"
+            style={{width:"100%",display:"block",border:"none"}}
+            title="Audio Player"
+          />
+        </div>
       )}
 
-      {/* URL input */}
-      <form onSubmit={handleSubmit} style={{padding:"10px 12px 12px",borderTop: embedUrl ? "1px solid rgba(255,255,255,0.05)" : "none"}}>
-        {!embedUrl && (
-          <p style={{fontSize:11,color:"#383838",marginBottom:8,lineHeight:1.5}}>
-            Paste an Apple Music or Spotify playlist link to start listening.
+      {/* SoundCloud loading / error states */}
+      {service==="soundcloud"&&!embedUrl&&!scLoading&&scError&&(
+        <div style={{padding:"14px 16px",textAlign:"center"}}>
+          <div style={{fontSize:12,color:"#8B4343",marginBottom:4}}>⚠ Couldn't load that SoundCloud link</div>
+          <div style={{fontSize:10.5,color:"#383838"}}>Try a public track or playlist URL</div>
+        </div>
+      )}
+      {service==="soundcloud"&&scLoading&&(
+        <div style={{padding:"18px 16px",textAlign:"center"}}>
+          <div style={{width:6,height:6,borderRadius:"50%",background:"#FF5500",margin:"0 auto 8px",animation:"pulse 1.4s infinite"}}/>
+          <div style={{fontSize:11,color:"#444"}}>Connecting to SoundCloud…</div>
+        </div>
+      )}
+
+      {/* ── URL input ── */}
+      <form onSubmit={handleSubmit} style={{padding:"10px 12px 12px",borderTop:embedUrl?"1px solid rgba(255,255,255,0.05)":"none"}}>
+        {!savedUrl&&(
+          <p style={{fontSize:11,color:"#383838",marginBottom:8,lineHeight:1.55}}>
+            Paste a YouTube or SoundCloud link to play music while you focus.
           </p>
         )}
         <div style={{display:"flex",gap:6}}>
@@ -407,33 +639,25 @@ function AudioWidget({ onClose }) {
             onChange={e=>setInputVal(e.target.value)}
             onFocus={()=>setInputFocus(true)}
             onBlur={()=>setInputFocus(false)}
-            placeholder={embedUrl ? "Swap playlist link…" : "Paste playlist link…"}
+            placeholder={savedUrl?"Swap link…":"Paste YouTube or SoundCloud link…"}
             style={{
-              flex:1, background:"rgba(255,255,255,0.05)",
-              border:`1px solid ${inputFocus ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.08)"}`,
-              borderRadius:8, padding:"7px 10px",
-              color:"#ccc", fontSize:11.5, fontFamily:"inherit",
-              outline:"none", transition:"border-color .2s",
+              flex:1,background:"rgba(255,255,255,0.05)",
+              border:`1px solid ${inputFocus?"rgba(255,255,255,0.2)":"rgba(255,255,255,0.08)"}`,
+              borderRadius:8,padding:"7px 10px",
+              color:"#ccc",fontSize:11.5,fontFamily:"inherit",
+              outline:"none",transition:"border-color .2s",
+              minWidth:0,
             }}
           />
           <button
             type="submit"
-            style={{
-              background:"rgba(255,255,255,0.08)",
-              border:"1px solid rgba(255,255,255,0.1)",
-              borderRadius:8, padding:"7px 11px",
-              color:"#aaa", fontSize:11.5, cursor:"pointer",
-              fontFamily:"inherit", fontWeight:500,
-              transition:"all .18s",
-            }}
+            style={{background:"rgba(255,255,255,0.08)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,padding:"7px 11px",color:"#aaa",fontSize:11.5,cursor:"pointer",fontFamily:"inherit",fontWeight:500,transition:"all .18s",flexShrink:0}}
             onMouseOver={e=>{e.currentTarget.style.background="rgba(255,255,255,0.14)";e.currentTarget.style.color="#fff";}}
             onMouseOut={e=>{e.currentTarget.style.background="rgba(255,255,255,0.08)";e.currentTarget.style.color="#aaa";}}
-          >
-            Load
-          </button>
+          >Load</button>
         </div>
-        {inputVal && !toEmbedUrl(inputVal) && (
-          <div style={{fontSize:10,color:"#8B4343",marginTop:5}}>⚠ Paste a music.apple.com or open.spotify.com link</div>
+        {inputBadUrl&&(
+          <div style={{fontSize:10,color:"#8B4343",marginTop:5}}>⚠ Paste a youtube.com, youtu.be, or soundcloud.com link</div>
         )}
       </form>
     </div>
@@ -478,6 +702,9 @@ export default function PomodoroApp() {
 
   // ── Apple Music Player ────────────────────────────────────────────────────
   const [showMusic,setShowMusic]     = useState(false);
+
+  // ── Ambient Mixer ──────────────────────────────────────────────────────────
+  const [showMixer,setShowMixer]     = useState(false);
 
   // ─── MASTER CLOCK REFS ────────────────────────────────────────────────────
   const tickRef            = useRef(null);
@@ -625,7 +852,15 @@ export default function PomodoroApp() {
       setIntercept(true);   // ← Flow Intercept popup
       setInterceptBreak(false);
       if (Notification.permission === "granted") {
-        new Notification("Zenflow", { body: "Goal reached! Timer running in overtime 🔥" });
+        const n = new Notification("Zenflow: Goal Reached! 🎯", {
+          body: "Click here to manage your Overtime or take a break.",
+          icon: "/favicon.ico",
+          requireInteraction: false,   // don't pin it — auto-dismisses after OS default timeout
+        });
+        n.onclick = () => {
+          window.focus();              // pull the tab to the front
+          n.close();                   // remove from OS notification centre
+        };
       }
     }
 
@@ -893,6 +1128,8 @@ export default function PomodoroApp() {
         .music-widget{animation:musicSlide .28s ease;}
         .music-toggle{transition:all .2s cubic-bezier(.34,1.56,.64,1);}
         .music-toggle:hover{transform:scale(1.08);}
+        .mixer-toggle{transition:all .2s cubic-bezier(.34,1.56,.64,1);}
+        .mixer-toggle:hover{transform:scale(1.08);}
       `}</style>
 
       {/* ── HEADER ── */}
@@ -909,6 +1146,10 @@ export default function PomodoroApp() {
             <button className="music-toggle" onClick={()=>setShowMusic(p=>!p)} title="Apple Music" style={{width:34,height:34,borderRadius:"50%",background:showMusic?"rgba(255,255,255,0.12)":"rgba(255,255,255,0.055)",border:`1px solid ${showMusic?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.09)"}`,color:showMusic?"#e8e8e8":"#666",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>
               ♪
             </button>
+            {/* Ambient mixer toggle */}
+            <button className="mixer-toggle" onClick={()=>setShowMixer(p=>!p)} title="Ambient Mixer" style={{width:34,height:34,borderRadius:"50%",background:showMixer?"rgba(107,158,120,0.18)":"rgba(255,255,255,0.055)",border:`1px solid ${showMixer?"rgba(107,158,120,0.35)":"rgba(255,255,255,0.09)"}`,color:showMixer?"#6B9E78":"#666",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>
+              🎧
+            </button>
             <div style={{textAlign:"right"}}>
               <div style={{fontSize:12.5,color:"#888",fontWeight:500}}>{user.displayName}</div>
               <div style={{fontSize:10,color:"#383838"}}>{user.email}</div>
@@ -924,6 +1165,9 @@ export default function PomodoroApp() {
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <button className="music-toggle" onClick={()=>setShowMusic(p=>!p)} title="Apple Music" style={{width:34,height:34,borderRadius:"50%",background:showMusic?"rgba(255,255,255,0.12)":"rgba(255,255,255,0.055)",border:`1px solid ${showMusic?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.09)"}`,color:showMusic?"#e8e8e8":"#666",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>
               ♪
+            </button>
+            <button className="mixer-toggle" onClick={()=>setShowMixer(p=>!p)} title="Ambient Mixer" style={{width:34,height:34,borderRadius:"50%",background:showMixer?"rgba(107,158,120,0.18)":"rgba(255,255,255,0.055)",border:`1px solid ${showMixer?"rgba(107,158,120,0.35)":"rgba(255,255,255,0.09)"}`,color:showMixer?"#6B9E78":"#666",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>
+              🎧
             </button>
             <button className="btn-spring" onClick={()=>setShowAuth(true)} style={{background:"rgba(255,255,255,0.055)",border:"1px solid rgba(255,255,255,0.09)",color:"#999",borderRadius:8,padding:"7px 14px",fontSize:12.5,cursor:"pointer",fontFamily:"inherit"}}>
               Sign in with Google
@@ -1251,6 +1495,9 @@ export default function PomodoroApp() {
 
       {/* ── DYNAMIC AUDIO WIDGET ── */}
       {showMusic&&<AudioWidget onClose={()=>setShowMusic(false)}/>}
+
+      {/* ── AMBIENT MIXER ── */}
+      {showMixer&&<AmbientMixer onClose={()=>setShowMixer(false)} accentColor={dispColor}/>}
     </div>
   );
 }
