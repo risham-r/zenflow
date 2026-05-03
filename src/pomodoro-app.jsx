@@ -295,6 +295,151 @@ function DeepDive({ tasks, taskStats, activeTaskId, isRunning, liveSession, mode
   );
 }
 
+// ─── URL → EMBED CONVERTER ────────────────────────────────────────────────────
+function toEmbedUrl(raw) {
+  try {
+    const url = raw.trim();
+    // Apple Music: https://music.apple.com/... → https://embed.music.apple.com/...
+    if (url.includes("music.apple.com")) {
+      return url.replace("https://music.apple.com", "https://embed.music.apple.com");
+    }
+    // Spotify: https://open.spotify.com/playlist/ID → https://open.spotify.com/embed/playlist/ID
+    if (url.includes("open.spotify.com")) {
+      // already an embed link — pass through
+      if (url.includes("/embed/")) return url;
+      const u = new URL(url);
+      // e.g. /playlist/37i9dQZF1DXcBWIGoYBM5M → /embed/playlist/37i9dQZF1DXcBWIGoYBM5M
+      u.pathname = "/embed" + u.pathname;
+      u.searchParams.set("utm_source", "zenflow");
+      return u.toString();
+    }
+    return null; // unknown service
+  } catch { return null; }
+}
+
+function iframeProps(embedUrl) {
+  if (!embedUrl) return {};
+  const isSpotify = embedUrl.includes("spotify.com");
+  return {
+    allow: isSpotify
+      ? "autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+      : "autoplay *; encrypted-media *; fullscreen *; clipboard-write",
+    sandbox: "allow-forms allow-popups allow-same-origin allow-scripts allow-top-navigation-by-user-activation",
+    height: isSpotify ? 152 : 150,
+  };
+}
+
+// ─── AUDIO WIDGET ─────────────────────────────────────────────────────────────
+function AudioWidget({ onClose }) {
+  const [rawUrl, setRawUrl]     = useState(() => load("pomo_audio_url", ""));
+  const [inputVal, setInputVal] = useState(() => load("pomo_audio_url", ""));
+  const [inputFocus, setInputFocus] = useState(false);
+  const embedUrl = rawUrl ? toEmbedUrl(rawUrl) : null;
+  const isSpotify = embedUrl?.includes("spotify.com");
+
+  const handleSubmit = e => {
+    e.preventDefault();
+    const trimmed = inputVal.trim();
+    setRawUrl(trimmed);
+    save("pomo_audio_url", trimmed);
+  };
+
+  const handleClear = () => {
+    setRawUrl(""); setInputVal("");
+    save("pomo_audio_url", "");
+  };
+
+  const serviceLabel = !embedUrl ? "MUSIC PLAYER"
+    : isSpotify ? "SPOTIFY" : "APPLE MUSIC";
+  const serviceColor = isSpotify ? "#1DB954" : "#C97D5B";
+
+  return (
+    <div className="music-widget" style={{
+      position:"fixed", bottom:24, left:24, zIndex:290,
+      width:296,
+      background:"rgba(14,14,18,0.90)",
+      backdropFilter:"blur(32px) saturate(1.6)",
+      WebkitBackdropFilter:"blur(32px) saturate(1.6)",
+      border:"1px solid rgba(255,255,255,0.09)",
+      borderRadius:16, overflow:"hidden",
+      boxShadow:"0 24px 64px rgba(0,0,0,0.75), 0 0 0 1px rgba(255,255,255,0.04) inset",
+    }}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:7}}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+            <path d="M9 18V5l12-2v13" stroke={embedUrl ? serviceColor : "#555"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+            <circle cx="6" cy="18" r="3" stroke={embedUrl ? serviceColor : "#555"} strokeWidth="1.8"/>
+            <circle cx="18" cy="16" r="3" stroke={embedUrl ? serviceColor : "#555"} strokeWidth="1.8"/>
+          </svg>
+          <span style={{fontSize:10.5,fontWeight:500,color: embedUrl ? serviceColor : "#555",letterSpacing:".08em",transition:"color .4s"}}>{serviceLabel}</span>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          {rawUrl && <button onClick={handleClear} style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:10.5,fontFamily:"inherit",transition:"color .2s",letterSpacing:".04em"}} onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#333"}>clear</button>}
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#383838",cursor:"pointer",fontSize:16,lineHeight:1,padding:"0 2px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#383838"}>×</button>
+        </div>
+      </div>
+
+      {/* Embed iframe — only shown when a valid URL is converted */}
+      {embedUrl && (
+        <iframe
+          key={embedUrl}
+          src={embedUrl}
+          height={iframeProps(embedUrl).height}
+          allow={iframeProps(embedUrl).allow}
+          sandbox={iframeProps(embedUrl).sandbox}
+          frameBorder="0"
+          style={{width:"100%",display:"block",background:"transparent"}}
+          title="Music Player"
+        />
+      )}
+
+      {/* URL input */}
+      <form onSubmit={handleSubmit} style={{padding:"10px 12px 12px",borderTop: embedUrl ? "1px solid rgba(255,255,255,0.05)" : "none"}}>
+        {!embedUrl && (
+          <p style={{fontSize:11,color:"#383838",marginBottom:8,lineHeight:1.5}}>
+            Paste an Apple Music or Spotify playlist link to start listening.
+          </p>
+        )}
+        <div style={{display:"flex",gap:6}}>
+          <input
+            value={inputVal}
+            onChange={e=>setInputVal(e.target.value)}
+            onFocus={()=>setInputFocus(true)}
+            onBlur={()=>setInputFocus(false)}
+            placeholder={embedUrl ? "Swap playlist link…" : "Paste playlist link…"}
+            style={{
+              flex:1, background:"rgba(255,255,255,0.05)",
+              border:`1px solid ${inputFocus ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.08)"}`,
+              borderRadius:8, padding:"7px 10px",
+              color:"#ccc", fontSize:11.5, fontFamily:"inherit",
+              outline:"none", transition:"border-color .2s",
+            }}
+          />
+          <button
+            type="submit"
+            style={{
+              background:"rgba(255,255,255,0.08)",
+              border:"1px solid rgba(255,255,255,0.1)",
+              borderRadius:8, padding:"7px 11px",
+              color:"#aaa", fontSize:11.5, cursor:"pointer",
+              fontFamily:"inherit", fontWeight:500,
+              transition:"all .18s",
+            }}
+            onMouseOver={e=>{e.currentTarget.style.background="rgba(255,255,255,0.14)";e.currentTarget.style.color="#fff";}}
+            onMouseOut={e=>{e.currentTarget.style.background="rgba(255,255,255,0.08)";e.currentTarget.style.color="#aaa";}}
+          >
+            Load
+          </button>
+        </div>
+        {inputVal && !toEmbedUrl(inputVal) && (
+          <div style={{fontSize:10,color:"#8B4343",marginTop:5}}>⚠ Paste a music.apple.com or open.spotify.com link</div>
+        )}
+      </form>
+    </div>
+  );
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function PomodoroApp() {
   const [user,setUser]               = useState(null);
@@ -1104,38 +1249,8 @@ export default function PomodoroApp() {
         </div>
       )}
 
-      {/* ── APPLE MUSIC PLAYER ── */}
-      {showMusic&&(
-        <div className="music-widget" style={{
-          position:"fixed",bottom:24,left:24,zIndex:290,
-          width:300,
-          background:"rgba(16,16,20,0.88)",
-          backdropFilter:"blur(28px) saturate(1.5)",
-          WebkitBackdropFilter:"blur(28px) saturate(1.5)",
-          border:"1px solid rgba(255,255,255,0.09)",
-          borderRadius:16,overflow:"hidden",
-          boxShadow:"0 20px 56px rgba(0,0,0,0.72), 0 0 0 1px rgba(255,255,255,0.04) inset",
-        }}>
-          {/* Widget header bar */}
-          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
-            <div style={{display:"flex",alignItems:"center",gap:7}}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 18V5l12-2v13" stroke="#C97D5B" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><circle cx="6" cy="18" r="3" stroke="#C97D5B" strokeWidth="1.8"/><circle cx="18" cy="16" r="3" stroke="#C97D5B" strokeWidth="1.8"/></svg>
-              <span style={{fontSize:11,fontWeight:500,color:"#888",letterSpacing:".07em"}}>APPLE MUSIC</span>
-            </div>
-            <button onClick={()=>setShowMusic(false)} style={{background:"none",border:"none",color:"#383838",cursor:"pointer",fontSize:16,lineHeight:1,padding:"0 2px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#383838"}>×</button>
-          </div>
-          {/* iframe embed */}
-          <iframe
-            allow="autoplay *; encrypted-media *; fullscreen *; clipboard-write"
-            frameBorder="0"
-            height="152"
-            style={{width:"100%",overflow:"hidden",background:"transparent",display:"block"}}
-            sandbox="allow-forms allow-popups allow-same-origin allow-scripts allow-top-navigation-by-user-activation"
-            src="https://embed.music.apple.com/in/playlist/liked-songs-spotify/pl.u-6mo4lD8iKj5qaEd"
-            title="Apple Music"
-          />
-        </div>
-      )}
+      {/* ── DYNAMIC AUDIO WIDGET ── */}
+      {showMusic&&<AudioWidget onClose={()=>setShowMusic(false)}/>}
     </div>
   );
 }
