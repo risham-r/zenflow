@@ -327,6 +327,13 @@ export default function PomodoroApp() {
   const [showSaved,setShowSaved]     = useState(false);
   const savedTimerRef                = useRef(null);
 
+  // ── Flow Intercept Popup ──────────────────────────────────────────────────
+  const [showIntercept,setIntercept] = useState(false);
+  const [interceptBreak,setInterceptBreak] = useState(false); // true = show break sub-menu
+
+  // ── Apple Music Player ────────────────────────────────────────────────────
+  const [showMusic,setShowMusic]     = useState(false);
+
   // ─── MASTER CLOCK REFS ────────────────────────────────────────────────────
   const tickRef            = useRef(null);
   const startTimeRef       = useRef(null);   // absolute wall-clock start (ms)
@@ -470,6 +477,8 @@ export default function PomodoroApp() {
       otRef.current = true;
       playChime();
       setChime(true);
+      setIntercept(true);   // ← Flow Intercept popup
+      setInterceptBreak(false);
       if (Notification.permission === "granted") {
         new Notification("Zenflow", { body: "Goal reached! Timer running in overtime 🔥" });
       }
@@ -565,6 +574,55 @@ export default function PomodoroApp() {
     setOT(false);
     otRef.current = false;
     setChime(false);
+  }, [commitRealTimeProgress, commitSession, duration, triggerSaved]);
+
+  // ─── FLOW INTERCEPT HANDLERS ─────────────────────────────────────────────
+  // "+15m": extend the goal, cancel overtime state, keep timer rolling
+  const handleAddTime = useCallback(() => {
+    const bonus = 900; // 15 minutes
+    durationAtStartRef.current += bonus;
+    setDuration(d => d + bonus);
+    setOT(false);
+    otRef.current = false;
+    setChime(false);
+    setIntercept(false);
+    setInterceptBreak(false);
+    // timeLeft will self-correct on the next tick via updateTimer
+  }, []);
+
+  // "Take a Break" sub-option: save focus time, switch mode, auto-start break
+  const handleBreakFromIntercept = useCallback((breakMode) => {
+    setIntercept(false);
+    setInterceptBreak(false);
+    // Flush & save focus session first (reuse endSession logic minus the modal)
+    clearInterval(tickRef.current);
+    const uncommitted = liveRef.current - lastCommitTimeRef.current;
+    commitRealTimeProgress(uncommitted);
+    commitSession(duration, liveRef.current);
+    triggerSaved();
+    // Reset all focus state
+    setRunning(false);
+    setLive(0); liveRef.current = 0;
+    startTimeRef.current = null; lastCommitTimeRef.current = 0;
+    setOT(false); otRef.current = false; setChime(false);
+    // Switch to break mode
+    const mins = MODES[breakMode].default;
+    setMode(breakMode); setSelMins(mins);
+    const secs = mins * 60;
+    setDuration(secs); setTimeLeft(secs);
+    // Auto-start the break after a microtick so state is flushed
+    setTimeout(() => {
+      startTimeRef.current       = Date.now();
+      durationAtStartRef.current = secs;
+      lastCommitTimeRef.current  = 0;
+      setRunning(true);
+      tickRef.current = setInterval(() => {
+        if (!startTimeRef.current) return;
+        const elapsedSecs = Math.floor((Date.now() - startTimeRef.current) / 1000);
+        setTimeLeft(secs - elapsedSecs);
+        setLive(elapsedSecs); liveRef.current = elapsedSecs;
+      }, 1000);
+    }, 80);
   }, [commitRealTimeProgress, commitSession, duration, triggerSaved]);
 
   // ─── MODE / DURATION CONTROLS ─────────────────────────────────────────────
@@ -680,6 +738,16 @@ export default function PomodoroApp() {
         .end-btn-ot{transition:all .2s ease;}
         .end-btn-ot:hover{transform:scale(1.04);background:rgba(212,168,67,0.25)!important;}
         .saved-badge{animation:savedPop .35s cubic-bezier(.34,1.56,.64,1) forwards, savedFade 2.2s ease forwards;}
+        @keyframes interceptIn  {from{opacity:0;transform:translateY(18px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
+        @keyframes interceptOut {from{opacity:1;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(12px) scale(.97)}}
+        @keyframes musicSlide   {from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        .intercept-popup{animation:interceptIn .32s cubic-bezier(.34,1.56,.64,1) forwards;}
+        .intercept-btn{transition:all .18s cubic-bezier(.34,1.56,.64,1);border:1px solid rgba(255,255,255,0.1);cursor:pointer;font-family:inherit;border-radius:10px;font-size:13px;font-weight:500;padding:10px 0;width:100%;}
+        .intercept-btn:hover{transform:scale(1.03);filter:brightness(1.15);}
+        .intercept-btn:active{transform:scale(.97);}
+        .music-widget{animation:musicSlide .28s ease;}
+        .music-toggle{transition:all .2s cubic-bezier(.34,1.56,.64,1);}
+        .music-toggle:hover{transform:scale(1.08);}
       `}</style>
 
       {/* ── HEADER ── */}
@@ -692,6 +760,10 @@ export default function PomodoroApp() {
 
         {user ? (
           <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {/* Music toggle */}
+            <button className="music-toggle" onClick={()=>setShowMusic(p=>!p)} title="Apple Music" style={{width:34,height:34,borderRadius:"50%",background:showMusic?"rgba(255,255,255,0.12)":"rgba(255,255,255,0.055)",border:`1px solid ${showMusic?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.09)"}`,color:showMusic?"#e8e8e8":"#666",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>
+              ♪
+            </button>
             <div style={{textAlign:"right"}}>
               <div style={{fontSize:12.5,color:"#888",fontWeight:500}}>{user.displayName}</div>
               <div style={{fontSize:10,color:"#383838"}}>{user.email}</div>
@@ -704,9 +776,14 @@ export default function PomodoroApp() {
             </div>
           </div>
         ) : (
-          <button className="btn-spring" onClick={()=>setShowAuth(true)} style={{background:"rgba(255,255,255,0.055)",border:"1px solid rgba(255,255,255,0.09)",color:"#999",borderRadius:8,padding:"7px 14px",fontSize:12.5,cursor:"pointer",fontFamily:"inherit"}}>
-            Sign in with Google
-          </button>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <button className="music-toggle" onClick={()=>setShowMusic(p=>!p)} title="Apple Music" style={{width:34,height:34,borderRadius:"50%",background:showMusic?"rgba(255,255,255,0.12)":"rgba(255,255,255,0.055)",border:`1px solid ${showMusic?"rgba(255,255,255,0.18)":"rgba(255,255,255,0.09)"}`,color:showMusic?"#e8e8e8":"#666",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>
+              ♪
+            </button>
+            <button className="btn-spring" onClick={()=>setShowAuth(true)} style={{background:"rgba(255,255,255,0.055)",border:"1px solid rgba(255,255,255,0.09)",color:"#999",borderRadius:8,padding:"7px 14px",fontSize:12.5,cursor:"pointer",fontFamily:"inherit"}}>
+              Sign in with Google
+            </button>
+          </div>
         )}
       </header>
 
@@ -965,6 +1042,98 @@ export default function PomodoroApp() {
             </button>
             <p style={{fontSize:11,color:"#2a2a2a",textAlign:"center",marginTop:16}}>Your data is encrypted and never shared.</p>
           </div>
+        </div>
+      )}
+
+      {/* ── FLOW INTERCEPT POPUP ── */}
+      {showIntercept&&(
+        <div className="intercept-popup" style={{
+          position:"fixed",bottom:24,right:24,zIndex:300,
+          background:"rgba(18,18,22,0.82)",
+          backdropFilter:"blur(28px) saturate(1.6)",
+          WebkitBackdropFilter:"blur(28px) saturate(1.6)",
+          border:"1px solid rgba(255,255,255,0.1)",
+          borderRadius:18,padding:"20px 18px",width:230,
+          boxShadow:"0 24px 64px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.04) inset",
+        }}>
+          {/* Header */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+            <div>
+              <div style={{fontSize:15,fontWeight:600,color:"#e8e8e8",lineHeight:1.2}}>Goal Reached! ✅</div>
+              <div style={{fontSize:10.5,color:"#555",marginTop:3,fontFamily:"'DM Mono',monospace"}}>
+                {fmtDur(duration)} · now in overtime
+              </div>
+            </div>
+            <button onClick={()=>{setIntercept(false);setInterceptBreak(false);}} style={{background:"none",border:"none",color:"#383838",cursor:"pointer",fontSize:18,lineHeight:1,padding:"0 2px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#383838"}>×</button>
+          </div>
+
+          {!interceptBreak ? (
+            <div style={{display:"flex",flexDirection:"column",gap:7}}>
+              {/* Continue */}
+              <button className="intercept-btn" onClick={()=>{setIntercept(false);setInterceptBreak(false);}}
+                style={{background:`${OVERTIME_COLOR}18`,color:OVERTIME_COLOR,borderColor:`${OVERTIME_COLOR}44`}}>
+                🔥 Continue
+              </button>
+              {/* +15m */}
+              <button className="intercept-btn" onClick={handleAddTime}
+                style={{background:"rgba(107,158,120,0.15)",color:"#6B9E78",borderColor:"rgba(107,158,120,0.35)"}}>
+                ⏱ Add +15 min
+              </button>
+              {/* Take a Break → sub-menu */}
+              <button className="intercept-btn" onClick={()=>setInterceptBreak(true)}
+                style={{background:"rgba(255,255,255,0.06)",color:"#999",borderColor:"rgba(255,255,255,0.1)"}}>
+                ☕ Take a Break
+              </button>
+            </div>
+          ) : (
+            <div style={{display:"flex",flexDirection:"column",gap:7}}>
+              <div style={{fontSize:10.5,color:"#444",letterSpacing:".08em",marginBottom:2}}>CHOOSE YOUR BREAK</div>
+              <button className="intercept-btn" onClick={()=>handleBreakFromIntercept("shortBreak")}
+                style={{background:"rgba(201,125,91,0.15)",color:"#C97D5B",borderColor:"rgba(201,125,91,0.35)"}}>
+                ☕ Short Break · {MODES.shortBreak.default}m
+              </button>
+              <button className="intercept-btn" onClick={()=>handleBreakFromIntercept("longBreak")}
+                style={{background:"rgba(201,125,91,0.1)",color:"#C97D5B",borderColor:"rgba(201,125,91,0.25)"}}>
+                🛋 Long Break · {MODES.longBreak.default}m
+              </button>
+              <button onClick={()=>setInterceptBreak(false)} style={{background:"none",border:"none",color:"#444",fontSize:11.5,cursor:"pointer",fontFamily:"inherit",marginTop:2,letterSpacing:".03em",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#444"}>
+                ← back
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── APPLE MUSIC PLAYER ── */}
+      {showMusic&&(
+        <div className="music-widget" style={{
+          position:"fixed",bottom:24,left:24,zIndex:290,
+          width:300,
+          background:"rgba(16,16,20,0.88)",
+          backdropFilter:"blur(28px) saturate(1.5)",
+          WebkitBackdropFilter:"blur(28px) saturate(1.5)",
+          border:"1px solid rgba(255,255,255,0.09)",
+          borderRadius:16,overflow:"hidden",
+          boxShadow:"0 20px 56px rgba(0,0,0,0.72), 0 0 0 1px rgba(255,255,255,0.04) inset",
+        }}>
+          {/* Widget header bar */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
+            <div style={{display:"flex",alignItems:"center",gap:7}}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 18V5l12-2v13" stroke="#C97D5B" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/><circle cx="6" cy="18" r="3" stroke="#C97D5B" strokeWidth="1.8"/><circle cx="18" cy="16" r="3" stroke="#C97D5B" strokeWidth="1.8"/></svg>
+              <span style={{fontSize:11,fontWeight:500,color:"#888",letterSpacing:".07em"}}>APPLE MUSIC</span>
+            </div>
+            <button onClick={()=>setShowMusic(false)} style={{background:"none",border:"none",color:"#383838",cursor:"pointer",fontSize:16,lineHeight:1,padding:"0 2px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#888"} onMouseOut={e=>e.currentTarget.style.color="#383838"}>×</button>
+          </div>
+          {/* iframe embed */}
+          <iframe
+            allow="autoplay *; encrypted-media *; fullscreen *; clipboard-write"
+            frameBorder="0"
+            height="152"
+            style={{width:"100%",overflow:"hidden",background:"transparent",display:"block"}}
+            sandbox="allow-forms allow-popups allow-same-origin allow-scripts allow-top-navigation-by-user-activation"
+            src="https://embed.music.apple.com/us/playlist/lo-fi-hip-hop/pl.2b1e453965fb43f2923aa0444ce36da2"
+            title="Apple Music"
+          />
         </div>
       )}
     </div>
