@@ -296,48 +296,115 @@ function DeepDive({ tasks, taskStats, activeTaskId, isRunning, liveSession, mode
 }
 
 // ─── AMBIENT SOUNDS ───────────────────────────────────────────────────────────
+// ─── AMBIENT TRACKS (YouTube video IDs) ──────────────────────────────────────
 const AMBIENT_TRACKS = [
-  { id:"rain",       label:"Rain",        emoji:"🌧",  src:"/sounds/rain.mp3"       },
-  { id:"cafe",       label:"Café",        emoji:"☕",  src:"/sounds/cafe.mp3"       },
-  { id:"fireplace",  label:"Fireplace",   emoji:"🔥",  src:"/sounds/fireplace.mp3"  },
-  { id:"wind",       label:"Wind",        emoji:"🌬",  src:"/sounds/wind.mp3"       },
-  { id:"brownnoise", label:"Brown Noise", emoji:"〰",  src:"/sounds/brownnoise.mp3" },
+  { id:"rain",       label:"Rain",        emoji:"🌧", ytId:"mPZkdNFkNps" },
+  { id:"cafe",       label:"Café",        emoji:"☕", ytId:"h2zkV-l_TbY"  },
+  { id:"brownnoise", label:"Brown Noise", emoji:"〰", ytId:"RqzGzwTY-6w"  },
+  { id:"lofi",       label:"Lo-Fi",       emoji:"🎵", ytId:"jfKfPfyJRdk"  },
 ];
+
+// ─── LOAD YOUTUBE IFRAME API (idempotent) ─────────────────────────────────────
+// Called once at module level. Subsequent calls are no-ops because the script
+// tag will already be present. Sets window.onYouTubeIframeAPIReady if unset.
+let ytApiReady = false;
+const ytReadyCallbacks = [];
+
+function ensureYTApiLoaded(onReady) {
+  if (ytApiReady) { onReady(); return; }
+  ytReadyCallbacks.push(onReady);
+  if (document.getElementById("yt-iframe-api")) return; // already injecting
+  const tag = document.createElement("script");
+  tag.id  = "yt-iframe-api";
+  tag.src = "https://www.youtube.com/iframe_api";
+  document.head.appendChild(tag);
+  // The API calls this global when it's ready
+  window.onYouTubeIframeAPIReady = () => {
+    ytApiReady = true;
+    ytReadyCallbacks.forEach(cb => cb());
+    ytReadyCallbacks.length = 0;
+  };
+}
 
 // ─── AMBIENT MIXER COMPONENT ──────────────────────────────────────────────────
 function AmbientMixer({ onClose, accentColor }) {
-  // volumes: { rain: 0, cafe: 0, ... }  — persisted across sessions
   const [volumes, setVolumes] = useState(() =>
     load("pomo_ambient_volumes", Object.fromEntries(AMBIENT_TRACKS.map(t => [t.id, 0])))
   );
-  const audioRefs = useRef({}); // { rain: <audio>, cafe: <audio>, ... }
+  // YT Player instances live entirely outside React state to avoid re-render churn
+  const players   = useRef({});   // { id: YT.Player }
+  const apiReady  = useRef(false);
+  const mountedVols = useRef(volumes); // latest volumes accessible inside callbacks
 
-  // Persist volumes whenever they change
+  // Keep the ref in sync with state (for use inside YT callbacks)
+  useEffect(() => { mountedVols.current = volumes; }, [volumes]);
+
+  // Persist to localStorage whenever volumes change
   useEffect(() => { save("pomo_ambient_volumes", volumes); }, [volumes]);
 
-  // On mount: restore volumes + play state for tracks that were > 0
+  // ── Initialise YT players exactly once on mount ───────────────────────────
   useEffect(() => {
-    AMBIENT_TRACKS.forEach(({ id }) => {
-      const el = audioRefs.current[id];
-      if (!el) return;
-      el.volume = volumes[id];
-      if (volumes[id] > 0) {
-        el.play().catch(() => {}); // browsers may block autoplay until user gesture
-      }
+    ensureYTApiLoaded(() => {
+      apiReady.current = true;
+      AMBIENT_TRACKS.forEach(({ id, ytId }) => {
+        // The div must already exist in the DOM — we render them below
+        players.current[id] = new window.YT.Player(`yt-player-${id}`, {
+          videoId: ytId,
+          playerVars: {
+            autoplay:   0,
+            controls:   0,
+            loop:       1,
+            playlist:   ytId,   // required for loop to work
+            mute:       0,
+            rel:        0,
+            playsinline:1,
+            modestbranding: 1,
+          },
+          events: {
+            onReady: (e) => {
+              // Restore saved volume; start playing if slider was > 0
+              const v = mountedVols.current[id];
+              e.target.setVolume(Math.round(v * 100));
+              if (v > 0) e.target.playVideo();
+            },
+            onStateChange: (e) => {
+              // If the video ends (shouldn't with loop, but just in case), restart
+              if (e.data === window.YT.PlayerState.ENDED) e.target.playVideo();
+            },
+          },
+        });
+      });
     });
-    // Only run on mount — intentionally omitting `volumes` from deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    // Cleanup: destroy players when mixer unmounts to free memory
+    return () => {
+      Object.values(players.current).forEach(p => {
+        try { p.destroy(); } catch {}
+      });
+      players.current = {};
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── Volume / play control ─────────────────────────────────────────────────
   const handleVolume = (id, raw) => {
-    const v = parseFloat(raw);
-    const el = audioRefs.current[id];
-    if (el) {
-      el.volume = v;
-      if (v > 0) { el.play().catch(() => {}); }
-      else        { el.pause(); }
+    const v  = parseFloat(raw);
+    const p  = players.current[id];
+    if (p && apiReady.current) {
+      try {
+        p.setVolume(Math.round(v * 100));   // YT expects 0-100
+        if (v > 0) p.playVideo();
+        else       p.pauseVideo();
+      } catch {}   // player may not be ready yet; state will restore on onReady
     }
     setVolumes(prev => ({ ...prev, [id]: v }));
+  };
+
+  const stopAll = () => {
+    Object.entries(players.current).forEach(([, p]) => {
+      try { p.pauseVideo(); } catch {}
+    });
+    setVolumes(Object.fromEntries(AMBIENT_TRACKS.map(t => [t.id, 0])));
   };
 
   const anyPlaying = AMBIENT_TRACKS.some(t => volumes[t.id] > 0);
@@ -353,31 +420,23 @@ function AmbientMixer({ onClose, accentColor }) {
       borderRadius:16, overflow:"hidden",
       boxShadow:"0 28px 72px rgba(0,0,0,0.82), 0 0 0 1px rgba(255,255,255,0.04) inset",
     }}>
-      {/* Hidden audio elements — keyed by id, never re-mounted */}
-      {AMBIENT_TRACKS.map(({ id, src }) => (
-        <audio
-          key={id}
-          ref={el => { audioRefs.current[id] = el; }}
-          src={src}
-          loop
-          preload="none"
-          style={{ display:"none" }}
-        />
-      ))}
+
+      {/* ── Invisible YT player divs — must be in the DOM before new YT.Player() ── */}
+      <div style={{position:"absolute",width:1,height:1,overflow:"hidden",opacity:0,pointerEvents:"none",top:0,left:0}} aria-hidden="true">
+        {AMBIENT_TRACKS.map(({ id }) => (
+          <div key={id} id={`yt-player-${id}`} style={{width:1,height:1}}/>
+        ))}
+      </div>
 
       {/* Header */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"11px 14px",borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:13}}>🎧</span>
-          <span style={{fontSize:10.5,fontWeight:500,letterSpacing:".08em",color: anyPlaying ? accentColor : "#666", transition:"color .4s"}}>
+          <span style={{fontSize:10.5,fontWeight:500,letterSpacing:".08em",color:anyPlaying?accentColor:"#666",transition:"color .4s"}}>
             AMBIENT MIXER
           </span>
-          {anyPlaying && (
-            <span style={{
-              display:"inline-block", width:6, height:6, borderRadius:"50%",
-              background: accentColor, boxShadow:`0 0 7px ${accentColor}`,
-              animation:"pulse 2s ease-in-out infinite",
-            }}/>
+          {anyPlaying&&(
+            <span style={{display:"inline-block",width:6,height:6,borderRadius:"50%",background:accentColor,boxShadow:`0 0 7px ${accentColor}`,animation:"pulse 2s ease-in-out infinite"}}/>
           )}
         </div>
         <button onClick={onClose} style={{background:"none",border:"none",color:"#383838",cursor:"pointer",fontSize:16,lineHeight:1,padding:"0 2px",transition:"color .2s"}}
@@ -391,38 +450,40 @@ function AmbientMixer({ onClose, accentColor }) {
           const active = vol > 0;
           return (
             <div key={id} style={{display:"flex",alignItems:"center",gap:10}}>
-              {/* Emoji + glow indicator */}
+              {/* Emoji tile with glow when active */}
               <div style={{
-                width:28, height:28, borderRadius:8, flexShrink:0,
-                display:"flex", alignItems:"center", justifyContent:"center",
-                fontSize:14,
-                background: active ? `${accentColor}1a` : "rgba(255,255,255,0.04)",
-                border: `1px solid ${active ? accentColor+"44" : "rgba(255,255,255,0.07)"}`,
-                boxShadow: active ? `0 0 10px ${accentColor}44` : "none",
+                width:28,height:28,borderRadius:8,flexShrink:0,
+                display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,
+                background:active?`${accentColor}1a`:"rgba(255,255,255,0.04)",
+                border:`1px solid ${active?accentColor+"44":"rgba(255,255,255,0.07)"}`,
+                boxShadow:active?`0 0 10px ${accentColor}44`:"none",
                 transition:"all .35s ease",
               }}>
                 {emoji}
               </div>
 
               {/* Label */}
-              <span style={{
-                fontSize:12, fontWeight:400, minWidth:70, flexShrink:0,
-                color: active ? "#ccc" : "#454545",
-                transition:"color .3s",
-              }}>{label}</span>
+              <span style={{fontSize:12,fontWeight:400,minWidth:62,flexShrink:0,color:active?"#ccc":"#454545",transition:"color .3s"}}>
+                {label}
+              </span>
 
-              {/* Volume slider */}
-              <div style={{flex:1, position:"relative"}}>
+              {/* Volume slider — styled via injected <style> so fill tracks value */}
+              <div style={{flex:1}}>
                 <style>{`
-                  .ambient-slider-${id}{-webkit-appearance:none;appearance:none;width:100%;height:3px;border-radius:3px;outline:none;cursor:pointer;background:linear-gradient(to right,${accentColor} 0%,${accentColor} ${vol*100}%,rgba(255,255,255,0.08) ${vol*100}%,rgba(255,255,255,0.08) 100%);}
-                  .ambient-slider-${id}::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;background:${active ? accentColor : "#3a3a3a"};box-shadow:${active ? `0 0 8px ${accentColor}99` : "none"};transition:background .3s,box-shadow .3s,transform .15s;cursor:grab;}
-                  .ambient-slider-${id}::-webkit-slider-thumb:active{transform:scale(1.25);}
-                  .ambient-slider-${id}::-moz-range-thumb{width:13px;height:13px;border:none;border-radius:50%;background:${active ? accentColor : "#3a3a3a"};cursor:grab;}
+                  .asl-${id}{-webkit-appearance:none;appearance:none;width:100%;height:3px;border-radius:3px;outline:none;cursor:pointer;
+                    background:linear-gradient(to right,${accentColor} 0%,${accentColor} ${vol*100}%,rgba(255,255,255,0.08) ${vol*100}%,rgba(255,255,255,0.08) 100%);}
+                  .asl-${id}::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+                    background:${active?accentColor:"#3a3a3a"};
+                    box-shadow:${active?`0 0 8px ${accentColor}99`:"none"};
+                    transition:background .3s,box-shadow .3s,transform .15s;cursor:grab;}
+                  .asl-${id}::-webkit-slider-thumb:active{transform:scale(1.28);}
+                  .asl-${id}::-moz-range-thumb{width:13px;height:13px;border:none;border-radius:50%;
+                    background:${active?accentColor:"#3a3a3a"};cursor:grab;}
                 `}</style>
                 <input
-                  type="range" min="0" max="1" step="0.01"
+                  type="range" min="0" max="1" step="0.02"
                   value={vol}
-                  className={`ambient-slider-${id}`}
+                  className={`asl-${id}`}
                   onChange={e => handleVolume(id, e.target.value)}
                 />
               </div>
@@ -430,29 +491,25 @@ function AmbientMixer({ onClose, accentColor }) {
           );
         })}
 
-        {/* All-off convenience button */}
-        {anyPlaying && (
-          <button
-            onClick={() => {
-              AMBIENT_TRACKS.forEach(({ id }) => {
-                const el = audioRefs.current[id];
-                if (el) el.pause();
-              });
-              setVolumes(Object.fromEntries(AMBIENT_TRACKS.map(t => [t.id, 0])));
-            }}
-            style={{
-              marginTop:2, background:"rgba(255,255,255,0.05)",
-              border:"1px solid rgba(255,255,255,0.08)", borderRadius:8,
-              padding:"6px 0", color:"#555", fontSize:11.5,
-              cursor:"pointer", fontFamily:"inherit", letterSpacing:".04em",
-              transition:"all .2s",
-            }}
+        {/* Stop all */}
+        {anyPlaying&&(
+          <button onClick={stopAll} style={{
+            marginTop:2,background:"rgba(255,255,255,0.05)",
+            border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,
+            padding:"6px 0",color:"#555",fontSize:11.5,
+            cursor:"pointer",fontFamily:"inherit",letterSpacing:".04em",transition:"all .2s",
+          }}
             onMouseOver={e=>{e.currentTarget.style.background="rgba(255,255,255,0.1)";e.currentTarget.style.color="#aaa";}}
             onMouseOut={e=>{e.currentTarget.style.background="rgba(255,255,255,0.05)";e.currentTarget.style.color="#555";}}
           >
             Stop all sounds
           </button>
         )}
+
+        {/* Attribution — YouTube ToS requires visible attribution for embedded players */}
+        <div style={{fontSize:9,color:"#252525",textAlign:"center",marginTop:2,letterSpacing:".04em"}}>
+          Streaming via YouTube
+        </div>
       </div>
     </div>
   );
