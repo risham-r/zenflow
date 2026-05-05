@@ -161,7 +161,7 @@ function SummaryModal({ summary, onClose, accentColor, accentGlow }) {
 }
 
 // ─── TASK LIST ────────────────────────────────────────────────────────────────
-function TaskList({ tasks, taskStats, activeTaskId, onTaskSelect, setTasks, isRunning, liveSession, mode, accentColor, accentGlow }) {
+function TaskList({ tasks, sessions, taskGoals, setTaskGoals, activeTaskId, onTaskSelect, setTasks, isRunning, liveSession, mode, accentColor, accentGlow }) {
   const [collapsed,setCollapsed]=useState(()=>load("pomo_collapsed",{}));
   useEffect(()=>save("pomo_collapsed",collapsed),[collapsed]);
   const dragId=useRef(null);
@@ -171,8 +171,60 @@ function TaskList({ tasks, taskStats, activeTaskId, onTaskSelect, setTasks, isRu
   const childrenOf=id=>tasks.filter(t=>t.parentId===id).sort((a,b)=>a.createdAt-b.createdAt);
   const hasChildren=id=>tasks.some(t=>t.parentId===id);
   const liveFocus=isRunning&&mode==="focus"?liveSession:0;
-  const ownSecs=id=>(taskStats[id]||0)+(activeTaskId===id?liveFocus:0);
-  const parentTotal=id=>{ const ch=childrenOf(id); const la=activeTaskId===id?liveFocus:ch.some(c=>c.id===activeTaskId)?liveFocus:0; return (taskStats[id]||0)+ch.reduce((a,c)=>a+(taskStats[c.id]||0),0)+la; };
+  const today=todayKey();
+
+  // Today-only seconds from completed sessions (not lifetime taskStats)
+  const todaySecsForTask=id=>sessions
+    .filter(s=>s.date===today&&s.taskId===id)
+    .reduce((a,s)=>a+s.durationSeconds,0);
+
+  const ownSecs=id=>todaySecsForTask(id)+(activeTaskId===id?liveFocus:0);
+  const parentTotal=id=>{
+    const ch=childrenOf(id);
+    const childLive=ch.some(c=>c.id===activeTaskId)?liveFocus:0;
+    const parentLive=activeTaskId===id?liveFocus:0;
+    return todaySecsForTask(id)+ch.reduce((a,c)=>a+todaySecsForTask(c.id),0)+parentLive+childLive;
+  };
+
+  // Goal helpers — prompt-based for simplicity
+  const setGoal=id=>{
+    const cur=taskGoals[id]?Math.round(taskGoals[id]/60):"";
+    const raw=window.prompt("Set daily goal in minutes (0 to clear):", cur);
+    if(raw===null)return; // cancelled
+    const mins=parseInt(raw,10);
+    if(isNaN(mins)||mins<0)return;
+    const secs=mins*60;
+    setTaskGoals(prev=>{
+      const next={...prev};
+      if(secs===0) delete next[id]; else next[id]=secs;
+      return next;
+    });
+  };
+
+  // Right-side display: goal progress if set, else raw time
+  const TimeDisplay=({id,isParent})=>{
+    const secs=ownSecs(id);
+    const goal=taskGoals[id]||0;
+    if(goal>0){
+      const rem=goal-secs;
+      if(rem<=0) return(
+        <span style={{fontSize:10.5,color:"#6B9E78",fontWeight:500,letterSpacing:".03em",
+          textShadow:"0 0 8px rgba(107,158,120,0.7)"}}>✅ Goal Met</span>
+      );
+      return(
+        <span style={{fontSize:11,color:"#C97D5B",fontFamily:"'DM Mono',monospace"}}>
+          {fmtDur(rem)} left
+        </span>
+      );
+    }
+    if(secs<=0)return null;
+    return(
+      <span style={{fontSize:11,color:isParent?accentColor+"99":"#484848",fontFamily:"'DM Mono',monospace"}}>
+        {fmtDur(secs)}
+      </span>
+    );
+  };
+
   const indentUnder=(tid,pid)=>{ if(tid===pid||hasChildren(tid))return; const p=tasks.find(t=>t.id===pid); if(p?.parentId)return; setTasks(prev=>prev.map(t=>t.id===tid?{...t,parentId:pid}:t)); };
   const unindent=tid=>setTasks(prev=>prev.map(t=>t.id===tid?{...t,parentId:null}:t));
   const removeTask=id=>{ setTasks(prev=>{ const orphans=prev.filter(t=>t.parentId===id).map(t=>({...t,parentId:null})); return [...prev.filter(t=>t.id!==id&&t.parentId!==id),...orphans]; }); if(activeTaskId===id)onTaskSelect(null); };
@@ -185,7 +237,7 @@ function TaskList({ tasks, taskStats, activeTaskId, onTaskSelect, setTasks, isRu
     <div>
       {parents.map(parent=>{
         const kids=childrenOf(parent.id), isPar=hasChildren(parent.id), isCol=collapsed[parent.id];
-        const isActive=activeTaskId===parent.id, pTotal=isPar?parentTotal(parent.id):ownSecs(parent.id);
+        const isActive=activeTaskId===parent.id;
         const dropChild=dropTarget?.id===parent.id&&dropTarget?.zone==="child";
         const dropAbove=dropTarget?.id===parent.id&&dropTarget?.zone==="above";
         return (
@@ -205,14 +257,15 @@ function TaskList({ tasks, taskStats, activeTaskId, onTaskSelect, setTasks, isRu
                 <div style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:isActive?accentColor:"rgba(255,255,255,0.12)",boxShadow:isActive?`0 0 7px ${accentColor}`:"none",transition:"all .3s"}}/>
               )}
               <span style={{flex:1,fontSize:isPar?13.5:13,fontWeight:isPar?500:400,color:isActive?"#eee":isPar?"#c0c0c0":"#888",transition:"color .2s"}}>{parent.name}</span>
-              {pTotal>0&&<span style={{fontSize:11,color:isPar?accentColor+"99":"#484848",fontFamily:"'DM Mono',monospace"}}>{fmtDur(pTotal)}</span>}
+              {isPar ? <TimeDisplay id={parent.id} isParent={true}/> : <TimeDisplay id={parent.id} isParent={false}/>}
               {isRunning&&isActive&&liveSession>0&&mode==="focus"&&<span style={{fontSize:10,color:accentColor,fontFamily:"'DM Mono',monospace"}}>+{fmtDur(liveSession)}</span>}
-              <span style={{display:"flex",gap:3,flexShrink:0}} onClick={e=>e.stopPropagation()}>
+              <span className="task-actions" style={{display:"flex",gap:3,flexShrink:0}} onClick={e=>e.stopPropagation()}>
+                <button onClick={()=>setGoal(parent.id)} title="Set daily goal" style={{background:"none",border:"none",color:taskGoals[parent.id]?"#C97D5B":"#252525",cursor:"pointer",fontSize:12,lineHeight:1,padding:"0 1px",transition:"color .2s,opacity .2s"}} onMouseOver={e=>e.currentTarget.style.color="#C97D5B"} onMouseOut={e=>e.currentTarget.style.color=taskGoals[parent.id]?"#C97D5B":"#252525"}>🎯</button>
                 <button onClick={()=>removeTask(parent.id)} style={{background:"none",border:"none",color:"#2e2e2e",cursor:"pointer",fontSize:15,lineHeight:1,padding:"0 1px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#777"} onMouseOut={e=>e.currentTarget.style.color="#2e2e2e"}>×</button>
               </span>
             </div>
             {!isCol&&kids.map(child=>{
-              const cSecs=ownSecs(child.id), cActive=activeTaskId===child.id;
+              const cActive=activeTaskId===child.id;
               return(
                 <div key={child.id} className="task-row" draggable onDragStart={e=>onDragStart(e,child.id)} onDragOver={e=>onDragOver(e,child.id,"child")} onDragLeave={()=>setDropTarget(null)} onDrop={e=>e.preventDefault()} onDragEnd={onDragEnd}
                   onClick={()=>onTaskSelect(child.id)}
@@ -220,9 +273,10 @@ function TaskList({ tasks, taskStats, activeTaskId, onTaskSelect, setTasks, isRu
                   <span style={{color:"#444",cursor:"grab",display:"flex",flexShrink:0}} onClick={e=>e.stopPropagation()}><DragHandle/></span>
                   <div style={{width:5,height:5,borderRadius:"50%",flexShrink:0,background:cActive?accentColor:"rgba(255,255,255,0.18)",boxShadow:cActive?`0 0 6px ${accentColor}`:"none",transition:"all .3s"}}/>
                   <span style={{flex:1,fontSize:12.5,fontWeight:300,color:cActive?"#ddd":"#666",transition:"color .2s"}}>{child.name}</span>
-                  {cSecs>0&&<span style={{fontSize:11,color:"#404040",fontFamily:"'DM Mono',monospace"}}>{fmtDur(cSecs+(isRunning&&cActive&&mode==="focus"?liveSession:0))}</span>}
+                  <TimeDisplay id={child.id} isParent={false}/>
                   {isRunning&&cActive&&liveSession>0&&mode==="focus"&&<span style={{fontSize:10,color:accentColor,fontFamily:"'DM Mono',monospace"}}>+{fmtDur(liveSession)}</span>}
-                  <span style={{display:"flex",gap:3}} onClick={e=>e.stopPropagation()}>
+                  <span className="task-actions" style={{display:"flex",gap:3}} onClick={e=>e.stopPropagation()}>
+                    <button onClick={()=>setGoal(child.id)} title="Set daily goal" style={{background:"none",border:"none",color:taskGoals[child.id]?"#C97D5B":"#252525",cursor:"pointer",fontSize:12,lineHeight:1,padding:"0 1px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#C97D5B"} onMouseOut={e=>e.currentTarget.style.color=taskGoals[child.id]?"#C97D5B":"#252525"}>🎯</button>
                     <button onClick={()=>unindent(child.id)} style={{background:"none",border:"none",color:"#2e2e2e",cursor:"pointer",fontSize:12,lineHeight:1,padding:"0 2px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#777"} onMouseOut={e=>e.currentTarget.style.color="#2e2e2e"}>⇤</button>
                     <button onClick={()=>removeTask(child.id)} style={{background:"none",border:"none",color:"#2e2e2e",cursor:"pointer",fontSize:15,lineHeight:1,padding:"0 1px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#777"} onMouseOut={e=>e.currentTarget.style.color="#2e2e2e"}>×</button>
                   </span>
@@ -743,6 +797,7 @@ export default function PomodoroApp() {
   const inputRef = useRef(null);
   const [dailyStats,setDS]           = useState(()=>load("pomo_dailyStats",{}));
   const [taskStats,setTS]            = useState(()=>load("pomo_taskStats",{}));
+  const [taskGoals,setTaskGoals]     = useState(()=>load("pomo_taskGoals",{}));
   const [sessions,setSessions]       = useState(()=>load("pomo_sessions",[]));
   const [showAn,setShowAn]           = useState(false);
   const [aTab,setATab]               = useState("overview");
@@ -788,6 +843,7 @@ export default function PomodoroApp() {
   useEffect(()=>save("pomo_tasks",      tasks),      [tasks]);
   useEffect(()=>save("pomo_dailyStats", dailyStats), [dailyStats]);
   useEffect(()=>save("pomo_taskStats",  taskStats),  [taskStats]);
+  useEffect(()=>save("pomo_taskGoals",  taskGoals),  [taskGoals]);
   useEffect(()=>save("pomo_activeTask", activeTaskId),[activeTaskId]);
   useEffect(()=>save("pomo_sessions",   sessions),   [sessions]);
   useEffect(()=>{ if(Notification.permission==="default")Notification.requestPermission(); },[]);
@@ -810,6 +866,7 @@ export default function PomodoroApp() {
         if(data.tasks)      { setTasks(data.tasks);       save("pomo_tasks",      data.tasks);      }
         if(data.dailyStats) { setDS(data.dailyStats);     save("pomo_dailyStats", data.dailyStats); }
         if(data.taskStats)  { setTS(data.taskStats);      save("pomo_taskStats",  data.taskStats);  }
+        if(data.taskGoals)  { setTaskGoals(data.taskGoals); save("pomo_taskGoals", data.taskGoals); }
         if(data.sessions)   { setSessions(data.sessions); save("pomo_sessions",   data.sessions);   }
       }
     } catch(err){ console.error("Firestore load error:",err); }
@@ -830,7 +887,7 @@ export default function PomodoroApp() {
 
   useEffect(()=>{
     if(!user) return;
-    saveToFirestore(user.uid,{tasks,dailyStats,taskStats,sessions});
+    saveToFirestore(user.uid,{tasks,dailyStats,taskStats,taskGoals,sessions});
   },[tasks,dailyStats,taskStats,sessions,user,saveToFirestore]);
 
   const handleSignIn = async()=>{
@@ -1358,7 +1415,8 @@ export default function PomodoroApp() {
           {tasks.length>0?(
             <div style={{borderTop:"1px solid rgba(255,255,255,0.04)"}}>
               <TaskList
-                tasks={tasks} taskStats={taskStats}
+                tasks={tasks} sessions={sessions}
+                taskGoals={taskGoals} setTaskGoals={setTaskGoals}
                 activeTaskId={activeTaskId}
                 onTaskSelect={handleTaskSwitch}
                 setTasks={setTasks}
