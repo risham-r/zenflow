@@ -161,7 +161,7 @@ function SummaryModal({ summary, onClose, accentColor, accentGlow }) {
 }
 
 // ─── TASK LIST ────────────────────────────────────────────────────────────────
-function TaskList({ tasks, sessions, taskGoals, setTaskGoals, activeTaskId, onTaskSelect, setTasks, isRunning, liveSession, mode, accentColor, accentGlow }) {
+function TaskList({ tasks, sessions, taskGoals, setTaskGoals, taskView, activeTaskId, onTaskSelect, setTasks, isRunning, liveSession, mode, accentColor, accentGlow }) {
   const [collapsed,setCollapsed]=useState(()=>load("pomo_collapsed",{}));
   useEffect(()=>save("pomo_collapsed",collapsed),[collapsed]);
   const dragId=useRef(null);
@@ -173,7 +173,6 @@ function TaskList({ tasks, sessions, taskGoals, setTaskGoals, activeTaskId, onTa
   const liveFocus=isRunning&&mode==="focus"?liveSession:0;
   const today=todayKey();
 
-  // Today-only seconds from completed sessions (not lifetime taskStats)
   const todaySecsForTask=id=>sessions
     .filter(s=>s.date===today&&s.taskId===id)
     .reduce((a,s)=>a+s.durationSeconds,0);
@@ -186,43 +185,14 @@ function TaskList({ tasks, sessions, taskGoals, setTaskGoals, activeTaskId, onTa
     return todaySecsForTask(id)+ch.reduce((a,c)=>a+todaySecsForTask(c.id),0)+parentLive+childLive;
   };
 
-  // Goal helpers — prompt-based for simplicity
   const setGoal=id=>{
     const cur=taskGoals[id]?Math.round(taskGoals[id]/60):"";
     const raw=window.prompt("Set daily goal in minutes (0 to clear):", cur);
-    if(raw===null)return; // cancelled
+    if(raw===null)return;
     const mins=parseInt(raw,10);
     if(isNaN(mins)||mins<0)return;
     const secs=mins*60;
-    setTaskGoals(prev=>{
-      const next={...prev};
-      if(secs===0) delete next[id]; else next[id]=secs;
-      return next;
-    });
-  };
-
-  // Right-side display: goal progress if set, else raw time
-  const TimeDisplay=({id,isParent})=>{
-    const secs=ownSecs(id);
-    const goal=taskGoals[id]||0;
-    if(goal>0){
-      const rem=goal-secs;
-      if(rem<=0) return(
-        <span style={{fontSize:10.5,color:"#6B9E78",fontWeight:500,letterSpacing:".03em",
-          textShadow:"0 0 8px rgba(107,158,120,0.7)"}}>✅ Goal Met</span>
-      );
-      return(
-        <span style={{fontSize:11,color:"#C97D5B",fontFamily:"'DM Mono',monospace"}}>
-          {fmtDur(rem)} left
-        </span>
-      );
-    }
-    if(secs<=0)return null;
-    return(
-      <span style={{fontSize:11,color:isParent?accentColor+"99":"#484848",fontFamily:"'DM Mono',monospace"}}>
-        {fmtDur(secs)}
-      </span>
-    );
+    setTaskGoals(prev=>{ const next={...prev}; if(secs===0) delete next[id]; else next[id]=secs; return next; });
   };
 
   const indentUnder=(tid,pid)=>{ if(tid===pid||hasChildren(tid))return; const p=tasks.find(t=>t.id===pid); if(p?.parentId)return; setTasks(prev=>prev.map(t=>t.id===tid?{...t,parentId:pid}:t)); };
@@ -233,11 +203,94 @@ function TaskList({ tasks, sessions, taskGoals, setTaskGoals, activeTaskId, onTa
   const onDrop=(e,tid)=>{ e.preventDefault(); const src=dragId.current; if(!src||src===tid){setDropTarget(null);return;} if(dropTarget?.zone==="child") indentUnder(src,tid); else { const tTask=tasks.find(t=>t.id===tid); if(!tTask?.parentId){ setTasks(prev=>{ const filt=prev.filter(t=>t.id!==src); const ti=filt.findIndex(t=>t.id===tid); const st=prev.find(t=>t.id===src); if(!st)return prev; filt.splice(dropTarget?.zone==="above"?ti:ti+1,0,{...st,parentId:null}); return filt; }); } } dragId.current=null; setDropTarget(null); };
   const onDragEnd=()=>{ dragId.current=null; setDropTarget(null); };
   const base={display:"flex",alignItems:"center",gap:8,cursor:"pointer",transition:"background .18s"};
+
+  // ── GOALS VIEW ─────────────────────────────────────────────────────────────
+  if(taskView==="goals"){
+    const allTasks=[...parents.map(p=>({...p,isParent:hasChildren(p.id),indent:0})),
+      ...parents.flatMap(p=>childrenOf(p.id).map(c=>({...c,isParent:false,indent:1})))];
+    if(!allTasks.length) return(
+      <div style={{padding:"22px 18px",textAlign:"center",color:"#303030",fontSize:13}}>
+        No tasks yet — add one to set goals.
+      </div>
+    );
+    return(
+      <div style={{animation:"tabIn .22s ease"}}>
+        {allTasks.map(task=>{
+          const secs=ownSecs(task.id);
+          const goal=taskGoals[task.id]||0;
+          const met=goal>0&&secs>=goal;
+          const pct=goal>0?Math.min(100,(secs/goal)*100):0;
+          const rem=goal>0?Math.max(0,goal-secs):0;
+          return(
+            <div key={task.id} style={{
+              padding: task.indent?"8px 16px 8px 34px":"10px 16px",
+              borderBottom:"1px solid rgba(255,255,255,0.025)",
+              borderLeft: task.indent?`2px solid ${accentColor}22`:"none",
+            }}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                {/* Icon */}
+                {task.isParent
+                  ? <FolderIcon color={goal>0?accentColor:"#444"}/>
+                  : <div style={{width:task.indent?5:7,height:task.indent?5:7,borderRadius:"50%",flexShrink:0,
+                      background:goal>0?accentColor:"rgba(255,255,255,0.12)",
+                      boxShadow:goal>0?`0 0 6px ${accentColor}`:"none",transition:"all .3s"}}/>
+                }
+                {/* Name */}
+                <span style={{flex:1,fontSize:task.indent?12.5:13,fontWeight:task.isParent?500:400,
+                  color:task.isParent?"#c0c0c0":"#888"}}>
+                  {task.name}
+                </span>
+                {/* Time / goal display — clickable to set goal */}
+                <button onClick={()=>setGoal(task.id)} style={{
+                  background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",
+                  textAlign:"right",padding:"2px 4px",borderRadius:5,
+                  transition:"background .2s",
+                }} onMouseOver={e=>e.currentTarget.style.background="rgba(255,255,255,0.06)"}
+                   onMouseOut={e=>e.currentTarget.style.background="none"}>
+                  {met?(
+                    <span style={{fontSize:10.5,color:"#6B9E78",fontWeight:500,
+                      textShadow:"0 0 8px rgba(107,158,120,0.7)"}}>✅ Goal Met</span>
+                  ):goal>0?(
+                    <span style={{fontFamily:"'DM Mono',monospace",fontSize:11,color:"#888"}}>
+                      <span style={{color:"#C97D5B"}}>{fmtDur(rem)}</span>
+                      <span style={{color:"#333"}}> left / </span>
+                      <span style={{color:"#555"}}>{fmtDur(goal)}</span>
+                    </span>
+                  ):(
+                    <span style={{fontSize:10.5,color:"#333",letterSpacing:".04em"}}>+ set goal</span>
+                  )}
+                </button>
+              </div>
+              {/* Progress bar — only when goal is set */}
+              {goal>0&&(
+                <div style={{marginTop:6,height:2,background:"rgba(255,255,255,0.04)",borderRadius:2,overflow:"hidden",
+                  marginLeft: task.indent?17:task.isParent?20:17}}>
+                  <div style={{
+                    height:"100%",
+                    width:`${pct}%`,
+                    borderRadius:2,
+                    background: met
+                      ? "linear-gradient(90deg,#4a8f5a,#6B9E78)"
+                      : `linear-gradient(90deg,${accentColor}88,${accentColor})`,
+                    boxShadow: met?`0 0 6px rgba(107,158,120,0.6)`:`0 0 4px ${accentColor}66`,
+                    transition:"width 1.2s cubic-bezier(.4,0,.2,1), background .6s ease",
+                  }}/>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // ── LOG VIEW (default) ─────────────────────────────────────────────────────
   return (
-    <div>
+    <div style={{animation:"tabIn .22s ease"}}>
       {parents.map(parent=>{
         const kids=childrenOf(parent.id), isPar=hasChildren(parent.id), isCol=collapsed[parent.id];
         const isActive=activeTaskId===parent.id;
+        const pSecs=isPar?parentTotal(parent.id):ownSecs(parent.id);
         const dropChild=dropTarget?.id===parent.id&&dropTarget?.zone==="child";
         const dropAbove=dropTarget?.id===parent.id&&dropTarget?.zone==="above";
         return (
@@ -257,15 +310,14 @@ function TaskList({ tasks, sessions, taskGoals, setTaskGoals, activeTaskId, onTa
                 <div style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:isActive?accentColor:"rgba(255,255,255,0.12)",boxShadow:isActive?`0 0 7px ${accentColor}`:"none",transition:"all .3s"}}/>
               )}
               <span style={{flex:1,fontSize:isPar?13.5:13,fontWeight:isPar?500:400,color:isActive?"#eee":isPar?"#c0c0c0":"#888",transition:"color .2s"}}>{parent.name}</span>
-              {isPar ? <TimeDisplay id={parent.id} isParent={true}/> : <TimeDisplay id={parent.id} isParent={false}/>}
+              {pSecs>0&&<span style={{fontSize:11,color:isPar?accentColor+"99":"#484848",fontFamily:"'DM Mono',monospace"}}>{fmtDur(pSecs)}</span>}
               {isRunning&&isActive&&liveSession>0&&mode==="focus"&&<span style={{fontSize:10,color:accentColor,fontFamily:"'DM Mono',monospace"}}>+{fmtDur(liveSession)}</span>}
-              <span className="task-actions" style={{display:"flex",gap:3,flexShrink:0}} onClick={e=>e.stopPropagation()}>
-                <button onClick={()=>setGoal(parent.id)} title="Set daily goal" style={{background:"none",border:"none",color:taskGoals[parent.id]?"#C97D5B":"#252525",cursor:"pointer",fontSize:12,lineHeight:1,padding:"0 1px",transition:"color .2s,opacity .2s"}} onMouseOver={e=>e.currentTarget.style.color="#C97D5B"} onMouseOut={e=>e.currentTarget.style.color=taskGoals[parent.id]?"#C97D5B":"#252525"}>🎯</button>
+              <span style={{display:"flex",gap:3,flexShrink:0}} onClick={e=>e.stopPropagation()}>
                 <button onClick={()=>removeTask(parent.id)} style={{background:"none",border:"none",color:"#2e2e2e",cursor:"pointer",fontSize:15,lineHeight:1,padding:"0 1px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#777"} onMouseOut={e=>e.currentTarget.style.color="#2e2e2e"}>×</button>
               </span>
             </div>
             {!isCol&&kids.map(child=>{
-              const cActive=activeTaskId===child.id;
+              const cSecs=ownSecs(child.id), cActive=activeTaskId===child.id;
               return(
                 <div key={child.id} className="task-row" draggable onDragStart={e=>onDragStart(e,child.id)} onDragOver={e=>onDragOver(e,child.id,"child")} onDragLeave={()=>setDropTarget(null)} onDrop={e=>e.preventDefault()} onDragEnd={onDragEnd}
                   onClick={()=>onTaskSelect(child.id)}
@@ -273,10 +325,9 @@ function TaskList({ tasks, sessions, taskGoals, setTaskGoals, activeTaskId, onTa
                   <span style={{color:"#444",cursor:"grab",display:"flex",flexShrink:0}} onClick={e=>e.stopPropagation()}><DragHandle/></span>
                   <div style={{width:5,height:5,borderRadius:"50%",flexShrink:0,background:cActive?accentColor:"rgba(255,255,255,0.18)",boxShadow:cActive?`0 0 6px ${accentColor}`:"none",transition:"all .3s"}}/>
                   <span style={{flex:1,fontSize:12.5,fontWeight:300,color:cActive?"#ddd":"#666",transition:"color .2s"}}>{child.name}</span>
-                  <TimeDisplay id={child.id} isParent={false}/>
+                  {cSecs>0&&<span style={{fontSize:11,color:"#404040",fontFamily:"'DM Mono',monospace"}}>{fmtDur(cSecs+(isRunning&&cActive&&mode==="focus"?liveSession:0))}</span>}
                   {isRunning&&cActive&&liveSession>0&&mode==="focus"&&<span style={{fontSize:10,color:accentColor,fontFamily:"'DM Mono',monospace"}}>+{fmtDur(liveSession)}</span>}
-                  <span className="task-actions" style={{display:"flex",gap:3}} onClick={e=>e.stopPropagation()}>
-                    <button onClick={()=>setGoal(child.id)} title="Set daily goal" style={{background:"none",border:"none",color:taskGoals[child.id]?"#C97D5B":"#252525",cursor:"pointer",fontSize:12,lineHeight:1,padding:"0 1px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#C97D5B"} onMouseOut={e=>e.currentTarget.style.color=taskGoals[child.id]?"#C97D5B":"#252525"}>🎯</button>
+                  <span style={{display:"flex",gap:3}} onClick={e=>e.stopPropagation()}>
                     <button onClick={()=>unindent(child.id)} style={{background:"none",border:"none",color:"#2e2e2e",cursor:"pointer",fontSize:12,lineHeight:1,padding:"0 2px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#777"} onMouseOut={e=>e.currentTarget.style.color="#2e2e2e"}>⇤</button>
                     <button onClick={()=>removeTask(child.id)} style={{background:"none",border:"none",color:"#2e2e2e",cursor:"pointer",fontSize:15,lineHeight:1,padding:"0 1px",transition:"color .2s"}} onMouseOver={e=>e.currentTarget.style.color="#777"} onMouseOut={e=>e.currentTarget.style.color="#2e2e2e"}>×</button>
                   </span>
@@ -794,6 +845,7 @@ export default function PomodoroApp() {
   const [newTask,setNewTask]         = useState("");
   const [iFocus,setIFocus]           = useState(false);
   const [addMode,setAddMode]         = useState("task");
+  const [taskView,setTaskView]       = useState("log"); // "log" | "goals"
   const inputRef = useRef(null);
   const [dailyStats,setDS]           = useState(()=>load("pomo_dailyStats",{}));
   const [taskStats,setTS]            = useState(()=>load("pomo_taskStats",{}));
@@ -1394,29 +1446,54 @@ export default function PomodoroApp() {
         {/* TASKS */}
         <section style={{background:"rgba(255,255,255,0.025)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:16,overflow:"hidden",marginBottom:14}}>
           <div style={{padding:"16px 18px 12px"}}>
+            {/* ── View toggle header ── */}
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
-              <div style={{fontSize:11,color:"#404040",letterSpacing:".1em"}}>TASKS & CATEGORIES</div>
-              <div style={{display:"flex",background:"rgba(255,255,255,0.04)",borderRadius:7,padding:2,gap:2,border:"1px solid rgba(255,255,255,0.06)"}}>
-                {["task","category"].map(m=>(
-                  <button key={m} onClick={()=>setAddMode(m)} style={{background:addMode===m?"rgba(255,255,255,0.08)":"transparent",border:"none",borderRadius:5,padding:"3px 9px",fontSize:10.5,color:addMode===m?"#ccc":"#444",cursor:"pointer",fontFamily:"inherit",transition:"all .2s",letterSpacing:".04em"}}>
-                    {m==="task"?"Sub-task":"Category"}
-                  </button>
+              <div style={{display:"flex",background:"rgba(255,255,255,0.04)",borderRadius:8,padding:3,gap:2,border:"1px solid rgba(255,255,255,0.07)"}}>
+                {[{id:"log",label:"Today's Log"},{id:"goals",label:"Daily Goals"}].map(v=>(
+                  <button key={v.id} onClick={()=>setTaskView(v.id)} style={{
+                    background:taskView===v.id?"rgba(255,255,255,0.09)":"transparent",
+                    border:taskView===v.id?"1px solid rgba(255,255,255,0.1)":"1px solid transparent",
+                    borderRadius:6,padding:"4px 11px",fontSize:11,
+                    color:taskView===v.id?"#ccc":"#444",
+                    cursor:"pointer",fontFamily:"inherit",
+                    transition:"all .22s cubic-bezier(.34,1.56,.64,1)",
+                    letterSpacing:".04em",fontWeight:taskView===v.id?500:400,
+                    boxShadow:taskView===v.id?"0 1px 6px rgba(0,0,0,0.4)":"none",
+                  }}>{v.label}</button>
                 ))}
               </div>
+              {taskView==="log"&&(
+                <div style={{display:"flex",background:"rgba(255,255,255,0.04)",borderRadius:7,padding:2,gap:2,border:"1px solid rgba(255,255,255,0.06)"}}>
+                  {["task","category"].map(m=>(
+                    <button key={m} onClick={()=>setAddMode(m)} style={{background:addMode===m?"rgba(255,255,255,0.08)":"transparent",border:"none",borderRadius:5,padding:"3px 9px",fontSize:10.5,color:addMode===m?"#ccc":"#444",cursor:"pointer",fontFamily:"inherit",transition:"all .2s",letterSpacing:".04em"}}>
+                      {m==="task"?"Sub-task":"Category"}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-            <form onSubmit={handleAdd} style={{display:"flex",gap:8}}>
-              <input ref={inputRef} value={newTask} onChange={e=>setNewTask(e.target.value)} onFocus={()=>setIFocus(true)} onBlur={()=>setIFocus(false)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();handleAdd(e);}}}
-                placeholder={addMode==="category"?"New category…":"New sub-task under active category…"}
-                style={{flex:1,background:"rgba(255,255,255,0.05)",border:`1px solid ${iFocus?dispColor+"88":"rgba(255,255,255,0.07)"}`,borderRadius:9,padding:"9px 13px",color:"#ddd",fontSize:13.5,fontFamily:"inherit",outline:"none",boxShadow:iFocus?`0 0 0 3px ${dispColor}18`:"none",transition:"border-color .3s,box-shadow .3s"}}/>
-              <button type="submit" className="add-btn" style={{background:dispColor,border:"none",borderRadius:9,width:40,color:"#fff",fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:iFocus?`0 0 18px ${dispGlow}`:"none",transition:"background .3s,box-shadow .3s"}}>+</button>
-            </form>
-            {tasks.length>1&&<div style={{fontSize:10.5,color:"#2e2e2e",marginTop:8}}>↕ Drag to nest · ⇤ to un-nest</div>}
+            {/* ── Add task input — only in log view ── */}
+            {taskView==="log"&&(
+              <>
+                <form onSubmit={handleAdd} style={{display:"flex",gap:8}}>
+                  <input ref={inputRef} value={newTask} onChange={e=>setNewTask(e.target.value)} onFocus={()=>setIFocus(true)} onBlur={()=>setIFocus(false)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();handleAdd(e);}}}
+                    placeholder={addMode==="category"?"New category…":"New sub-task under active category…"}
+                    style={{flex:1,background:"rgba(255,255,255,0.05)",border:`1px solid ${iFocus?dispColor+"88":"rgba(255,255,255,0.07)"}`,borderRadius:9,padding:"9px 13px",color:"#ddd",fontSize:13.5,fontFamily:"inherit",outline:"none",boxShadow:iFocus?`0 0 0 3px ${dispColor}18`:"none",transition:"border-color .3s,box-shadow .3s"}}/>
+                  <button type="submit" className="add-btn" style={{background:dispColor,border:"none",borderRadius:9,width:40,color:"#fff",fontSize:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:iFocus?`0 0 18px ${dispGlow}`:"none",transition:"background .3s,box-shadow .3s"}}>+</button>
+                </form>
+                {tasks.length>1&&<div style={{fontSize:10.5,color:"#2e2e2e",marginTop:8}}>↕ Drag to nest · ⇤ to un-nest</div>}
+              </>
+            )}
+            {taskView==="goals"&&tasks.length>0&&(
+              <p style={{fontSize:11,color:"#333",lineHeight:1.5}}>Click any time display to set or update a daily goal.</p>
+            )}
           </div>
           {tasks.length>0?(
             <div style={{borderTop:"1px solid rgba(255,255,255,0.04)"}}>
               <TaskList
                 tasks={tasks} sessions={sessions}
                 taskGoals={taskGoals} setTaskGoals={setTaskGoals}
+                taskView={taskView}
                 activeTaskId={activeTaskId}
                 onTaskSelect={handleTaskSwitch}
                 setTasks={setTasks}
